@@ -19,6 +19,12 @@ use soroban_sdk::{
 const BPS_DENOM: u32 = 10_000;
 /// Safety bound so a single tip can't fan out to an unbounded recipient list.
 const MAX_RECIPIENTS: u32 = 20;
+/// Longest tip message, in bytes, that may ride along in the `tip` event.
+///
+/// The message is echoed verbatim into the event payload, so an unbounded
+/// string inflates the transaction and every downstream copy the indexer has
+/// to store and serve. 280 matches the character budget the tip form implies.
+const MAX_MESSAGE_LEN: u32 = 280;
 
 /// One recipient and the share of every tip they receive, in basis points.
 #[contracttype]
@@ -57,6 +63,7 @@ pub enum Error {
     InvalidAmount = 5,
     TooManyRecipients = 6,
     DuplicateRecipient = 7,
+    MessageTooLong = 8,
 }
 
 #[contract]
@@ -110,10 +117,16 @@ impl TipSplitter {
 
     /// Send a tip. Transfers `amount` of USDC from `from`, split across the jar's
     /// recipients atomically, then emits a `("tip", jar_id)` event.
+    ///
+    /// `message` may be at most `MAX_MESSAGE_LEN` bytes; it is rejected before
+    /// any funds move.
     pub fn tip(env: Env, from: Address, jar_id: String, amount: i128, message: String) {
         from.require_auth();
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
+        }
+        if message.len() > MAX_MESSAGE_LEN {
+            panic_with_error!(&env, Error::MessageTooLong);
         }
 
         let jar: Jar = env

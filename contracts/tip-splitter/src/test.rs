@@ -496,6 +496,84 @@ fn tip_rejects_nonpositive_amount() {
     assert_eq!(res, Err(Ok(Error::InvalidAmount)));
 }
 
+/// An over-long message is rejected before any funds move — the guard sits
+/// above the transfer loop, so balances must be untouched.
+#[test]
+fn tip_rejects_over_long_message() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+    let token = token::Client::new(env, &s.token);
+    let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let tipper = Address::generate(env);
+    token_admin.mint(&tipper, &500);
+
+    let jar_id = String::from_str(env, "@wordy");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    // One byte over MAX_MESSAGE_LEN (280).
+    let too_long = String::from_bytes(env, &[b'a'; 281]);
+    let res = client.try_tip(&tipper, &jar_id, &100, &too_long);
+    assert_eq!(res, Err(Ok(Error::MessageTooLong.into())));
+
+    // No funds may have moved.
+    assert_eq!(token.balance(&alice), 0, "alice must not have been paid");
+    assert_eq!(
+        token.balance(&tipper),
+        500,
+        "tipper balance must be unchanged"
+    );
+}
+
+/// A message of exactly MAX_MESSAGE_LEN bytes is still valid — the bound is
+/// inclusive, so an off-by-one here would reject legitimate tips.
+#[test]
+fn tip_accepts_message_at_exact_limit() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+    let token = token::Client::new(env, &s.token);
+    let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let tipper = Address::generate(env);
+    token_admin.mint(&tipper, &500);
+
+    let jar_id = String::from_str(env, "@atlimit");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    let exact = String::from_bytes(env, &[b'a'; 280]);
+    assert_eq!(exact.len(), 280);
+    client.tip(&tipper, &jar_id, &100, &exact);
+
+    assert_eq!(token.balance(&alice), 100);
+    assert_eq!(token.balance(&tipper), 400);
+}
+
 #[test]
 fn update_splits_changes_distribution() {
     let s = setup();
