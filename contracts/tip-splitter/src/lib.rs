@@ -165,12 +165,17 @@ impl TipSplitter {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
     }
 
-    /// Validate that splits are non-empty, within bounds, carry a non-zero
-    /// share each, and sum to 100%.
+    /// Validate that splits are non-empty, within bounds, carry a share that is
+    /// neither zero nor above 100% each, and sum to exactly 100%.
     ///
     /// A `bps == 0` entry would never be paid — `tip` skips zero shares — so it
     /// is dead weight that still consumes a slot against `MAX_RECIPIENTS` and
     /// misleads clients into showing a collaborator who never receives funds.
+    ///
+    /// A `bps > BPS_DENOM` entry claims more than the whole tip, so it can never
+    /// belong to a set summing to 100%. Rejecting it per entry also bounds the
+    /// running total at `MAX_RECIPIENTS * BPS_DENOM` (200_000), which keeps the
+    /// accumulator far below `u32::MAX` by construction.
     fn validate_splits(env: &Env, splits: &Vec<Split>) {
         let n = splits.len();
         if n == 0 {
@@ -181,12 +186,20 @@ impl TipSplitter {
         }
         let mut total: u32 = 0;
         for i in 0..n {
-            let bps = splits.get(i).unwrap().bps;
-            if bps == 0 {
+            let split = splits.get(i).unwrap();
+            let bps = split.bps;
+            if bps == 0 || bps > BPS_DENOM {
                 panic_with_error!(env, Error::InvalidSplits);
             }
-            total += bps;
-            let split = splits.get(i).unwrap();
+            // `checked_add` rather than `+=`: `bps` is caller-supplied, and an
+            // overflow must surface as the same typed `InvalidSplits` every
+            // other rejection returns, not as an opaque wasm trap. The bound
+            // above already makes overflow unreachable, so this is belt and
+            // braces — but it puts the invariant in the code rather than
+            // resting on `overflow-checks = true` in the release profile.
+            total = total
+                .checked_add(bps)
+                .unwrap_or_else(|| panic_with_error!(env, Error::InvalidSplits));
             // Pairwise comparison rather than a set: `n` is capped at
             // MAX_RECIPIENTS (20), so this is at most 190 comparisons, and a hash
             // set would need an allocator we don't have under `no_std`.
@@ -195,7 +208,6 @@ impl TipSplitter {
                     panic_with_error!(env, Error::DuplicateRecipient);
                 }
             }
-            total += split.bps;
         }
         if total != BPS_DENOM {
             panic_with_error!(env, Error::InvalidSplits);

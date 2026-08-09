@@ -130,6 +130,112 @@ fn create_jar_rejects_bad_bps_sum() {
     assert_eq!(res, Err(Ok(Error::InvalidSplits.into())));
 }
 
+/// No single share may exceed 100%. Such an entry can never belong to a set
+/// summing to `BPS_DENOM`, and rejecting it per entry is what bounds the
+/// running total well below `u32::MAX`.
+#[test]
+fn create_jar_rejects_bps_above_one_hundred_percent() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let bad = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10_001,
+        },
+    ];
+
+    let res = client.try_create_jar(&owner, &String::from_str(env, "@overshare"), &bad);
+    assert_eq!(res, Err(Ok(Error::InvalidSplits.into())));
+}
+
+/// Overflow regression: `u32::MAX + 10_001` is `2^32 + 10_000`, so a wrapping
+/// `+=` would land on exactly `BPS_DENOM` and wave this jar through as if the
+/// shares summed to 100%. It must be rejected with the typed `InvalidSplits`,
+/// and it must be rejected by the validator itself — not by `overflow-checks`
+/// trapping in the release profile, which would surface as an opaque wasm
+/// error instead of error code 4.
+#[test]
+fn create_jar_rejects_bps_sum_that_wraps_u32() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+    let bad = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: u32::MAX,
+        },
+        Split {
+            to: bob.clone(),
+            bps: 10_001,
+        },
+    ];
+
+    let jar_id = String::from_str(env, "@wrap");
+    let res = client.try_create_jar(&owner, &jar_id, &bad);
+    assert_eq!(res, Err(Ok(Error::InvalidSplits.into())));
+
+    // The jar must not have been stored.
+    let jar = client.try_get_jar(&jar_id);
+    assert!(jar.is_err(), "rejected jar must not be persisted");
+}
+
+/// `update_splits` runs the same validator, so overflowing shares can't be
+/// swapped into a jar that already exists.
+#[test]
+fn update_splits_rejects_bps_sum_that_wraps_u32() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+
+    let jar_id = String::from_str(env, "@upd-wrap");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    let res = client.try_update_splits(
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: u32::MAX,
+            },
+            Split {
+                to: bob.clone(),
+                bps: 10_001,
+            },
+        ],
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidSplits.into())));
+
+    // The original split must be untouched.
+    let jar = client.get_jar(&jar_id);
+    assert_eq!(jar.splits.len(), 1);
+    assert_eq!(jar.splits.get(0).unwrap().bps, 10000);
+}
+
 /// The same address twice is rejected even though the shares still total 100%.
 #[test]
 fn create_jar_rejects_duplicate_recipient() {
