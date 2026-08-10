@@ -1,6 +1,6 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::{token, vec, Address, Env, String};
 
 /// Shared test fixture: a fresh env with a USDC-like token and a deployed
@@ -454,7 +454,7 @@ fn create_jar_rejects_duplicate_slug() {
 
     client.create_jar(&owner, &jar_id, &splits);
     let res = client.try_create_jar(&owner, &jar_id, &splits);
-    assert_eq!(res, Err(Ok(Error::JarExists)));
+    assert_eq!(res, Err(Ok(Error::JarExists.into())));
 }
 
 #[test]
@@ -470,7 +470,7 @@ fn tip_on_missing_jar_fails() {
         &100,
         &String::from_str(env, "?"),
     );
-    assert_eq!(res, Err(Ok(Error::JarNotFound)));
+    assert_eq!(res, Err(Ok(Error::JarNotFound.into())));
 }
 
 #[test]
@@ -493,7 +493,7 @@ fn tip_rejects_nonpositive_amount() {
     client.create_jar(&owner, &jar_id, &splits);
 
     let res = client.try_tip(&tipper, &jar_id, &0, &String::from_str(env, ""));
-    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
 }
 
 #[test]
@@ -570,7 +570,12 @@ fn tip_single_recipient_receives_full_amount() {
         },
     ];
     client.create_jar(&owner, &jar_id, &splits);
-    client.tip(&tipper, &jar_id, &500, &String::from_str(env, "all for you"));
+    client.tip(
+        &tipper,
+        &jar_id,
+        &500,
+        &String::from_str(env, "all for you"),
+    );
 
     // Single recipient must receive the exact amount with no dust loss
     assert_eq!(token.balance(&alice), 500);
@@ -596,12 +601,8 @@ fn create_jar_rejects_too_many_recipients() {
         });
     }
 
-    let res = client.try_create_jar(
-        &owner,
-        &String::from_str(env, "@toobig"),
-        &splits_vec,
-    );
-    assert_eq!(res, Err(Ok(Error::TooManyRecipients)));
+    let res = client.try_create_jar(&owner, &String::from_str(env, "@toobig"), &splits_vec);
+    assert_eq!(res, Err(Ok(Error::TooManyRecipients.into())));
 }
 
 #[test]
@@ -612,19 +613,26 @@ fn create_jar_emits_jar_created_event() {
 
     let owner = Address::generate(env);
     let alice = Address::generate(env);
-    let splits = vec![env, Split { to: alice.clone(), bps: 10000 }];
+    let splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10000,
+        },
+    ];
     let jar_id = String::from_str(env, "@one");
 
     client.create_jar(&owner, &jar_id, &splits);
 
     // The jar_crtd event must be published with the correct topics and data.
-    let events = env.events().all();
-    // Filter to events emitted by our contract.
-    let jar_events: soroban_sdk::Vec<_> = events
+    // Count the events emitted by our contract (the token SAC emits its own).
+    let jar_events = env
+        .events()
+        .all()
         .iter()
         .filter(|e| e.0 == s.contract)
-        .collect();
-    assert_eq!(jar_events.len(), 1);
+        .count();
+    assert_eq!(jar_events, 1);
 }
 
 #[test]
@@ -712,10 +720,26 @@ fn tip_multi_recipient_no_partial_distribution_on_insufficient_balance() {
     assert!(res.is_err());
 
     // Atomicity: every recipient balance must still be 0 — no partial payment.
-    assert_eq!(token.balance(&alice), 0, "alice must not have received anything");
-    assert_eq!(token.balance(&bob), 0, "bob must not have received anything");
-    assert_eq!(token.balance(&carol), 0, "carol must not have received anything");
+    assert_eq!(
+        token.balance(&alice),
+        0,
+        "alice must not have received anything"
+    );
+    assert_eq!(
+        token.balance(&bob),
+        0,
+        "bob must not have received anything"
+    );
+    assert_eq!(
+        token.balance(&carol),
+        0,
+        "carol must not have received anything"
+    );
 
     // The tipper's balance must be completely unchanged.
-    assert_eq!(token.balance(&tipper), 100, "tipper balance must be unchanged");
+    assert_eq!(
+        token.balance(&tipper),
+        100,
+        "tipper balance must be unchanged"
+    );
 }
