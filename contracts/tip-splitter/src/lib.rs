@@ -81,9 +81,13 @@ impl TipSplitter {
             panic_with_error!(&env, Error::JarExists);
         }
         Self::validate_splits(&env, &splits);
-        env.storage()
-            .persistent()
-            .set(&key, &Jar { owner: owner.clone(), splits });
+        env.storage().persistent().set(
+            &key,
+            &Jar {
+                owner: owner.clone(),
+                splits,
+            },
+        );
 
         env.events()
             .publish((symbol_short!("jar_crtd"), jar_id), owner);
@@ -181,12 +185,11 @@ impl TipSplitter {
         }
         let mut total: u32 = 0;
         for i in 0..n {
-            let bps = splits.get(i).unwrap().bps;
-            if bps == 0 {
+            let split = splits.get(i).unwrap();
+            if split.bps == 0 {
                 panic_with_error!(env, Error::InvalidSplits);
             }
-            total += bps;
-            let split = splits.get(i).unwrap();
+            total += split.bps;
             // Pairwise comparison rather than a set: `n` is capped at
             // MAX_RECIPIENTS (20), so this is at most 190 comparisons, and a hash
             // set would need an allocator we don't have under `no_std`.
@@ -195,7 +198,6 @@ impl TipSplitter {
                     panic_with_error!(env, Error::DuplicateRecipient);
                 }
             }
-            total += split.bps;
         }
         if total != BPS_DENOM {
             panic_with_error!(env, Error::InvalidSplits);
