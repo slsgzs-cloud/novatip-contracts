@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{token, vec, Address, Env, String};
+use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{token, vec, Address, Env, IntoVal, String};
 
 /// Shared test fixture: a fresh env with a USDC-like token and a deployed
 /// TipSplitter pointed at it. All auths are mocked.
@@ -454,7 +454,7 @@ fn create_jar_rejects_duplicate_slug() {
 
     client.create_jar(&owner, &jar_id, &splits);
     let res = client.try_create_jar(&owner, &jar_id, &splits);
-    assert_eq!(res, Err(Ok(Error::JarExists)));
+    assert_eq!(res, Err(Ok(Error::JarExists.into())));
 }
 
 /// `jar_exists` flips from false to true on registration, and matches the slug
@@ -589,7 +589,7 @@ fn tip_on_missing_jar_fails() {
         &100,
         &String::from_str(env, "?"),
     );
-    assert_eq!(res, Err(Ok(Error::JarNotFound)));
+    assert_eq!(res, Err(Ok(Error::JarNotFound.into())));
 }
 
 #[test]
@@ -612,7 +612,85 @@ fn tip_rejects_nonpositive_amount() {
     client.create_jar(&owner, &jar_id, &splits);
 
     let res = client.try_tip(&tipper, &jar_id, &0, &String::from_str(env, ""));
-    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+}
+
+/// An over-long message is rejected before any funds move — the guard sits
+/// above the transfer loop, so balances must be untouched.
+#[test]
+fn tip_rejects_over_long_message() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+    let token = token::Client::new(env, &s.token);
+    let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let tipper = Address::generate(env);
+    token_admin.mint(&tipper, &500);
+
+    let jar_id = String::from_str(env, "@wordy");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    // One byte over MAX_MESSAGE_LEN (280).
+    let too_long = String::from_bytes(env, &[b'a'; 281]);
+    let res = client.try_tip(&tipper, &jar_id, &100, &too_long);
+    assert_eq!(res, Err(Ok(Error::MessageTooLong.into())));
+
+    // No funds may have moved.
+    assert_eq!(token.balance(&alice), 0, "alice must not have been paid");
+    assert_eq!(
+        token.balance(&tipper),
+        500,
+        "tipper balance must be unchanged"
+    );
+}
+
+/// A message of exactly MAX_MESSAGE_LEN bytes is still valid — the bound is
+/// inclusive, so an off-by-one here would reject legitimate tips.
+#[test]
+fn tip_accepts_message_at_exact_limit() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+    let token = token::Client::new(env, &s.token);
+    let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let tipper = Address::generate(env);
+    token_admin.mint(&tipper, &500);
+
+    let jar_id = String::from_str(env, "@atlimit");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    let exact = String::from_bytes(env, &[b'a'; 280]);
+    assert_eq!(exact.len(), 280);
+    client.tip(&tipper, &jar_id, &100, &exact);
+
+    assert_eq!(token.balance(&alice), 100);
+    assert_eq!(token.balance(&tipper), 400);
 }
 
 #[test]
@@ -689,7 +767,12 @@ fn tip_single_recipient_receives_full_amount() {
         },
     ];
     client.create_jar(&owner, &jar_id, &splits);
-    client.tip(&tipper, &jar_id, &500, &String::from_str(env, "all for you"));
+    client.tip(
+        &tipper,
+        &jar_id,
+        &500,
+        &String::from_str(env, "all for you"),
+    );
 
     // Single recipient must receive the exact amount with no dust loss
     assert_eq!(token.balance(&alice), 500);
@@ -715,12 +798,8 @@ fn create_jar_rejects_too_many_recipients() {
         });
     }
 
-    let res = client.try_create_jar(
-        &owner,
-        &String::from_str(env, "@toobig"),
-        &splits_vec,
-    );
-    assert_eq!(res, Err(Ok(Error::TooManyRecipients)));
+    let res = client.try_create_jar(&owner, &String::from_str(env, "@toobig"), &splits_vec);
+    assert_eq!(res, Err(Ok(Error::TooManyRecipients.into())));
 }
 
 #[test]
@@ -731,19 +810,26 @@ fn create_jar_emits_jar_created_event() {
 
     let owner = Address::generate(env);
     let alice = Address::generate(env);
-    let splits = vec![env, Split { to: alice.clone(), bps: 10000 }];
+    let splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10000,
+        },
+    ];
     let jar_id = String::from_str(env, "@one");
 
     client.create_jar(&owner, &jar_id, &splits);
 
     // The jar_crtd event must be published with the correct topics and data.
-    let events = env.events().all();
-    // Filter to events emitted by our contract.
-    let jar_events: soroban_sdk::Vec<_> = events
+    // Count the events emitted by our contract (the token SAC emits its own).
+    let jar_events = env
+        .events()
+        .all()
         .iter()
         .filter(|e| e.0 == s.contract)
-        .collect();
-    assert_eq!(jar_events.len(), 1);
+        .count();
+    assert_eq!(jar_events, 1);
 }
 
 #[test]
@@ -831,10 +917,392 @@ fn tip_multi_recipient_no_partial_distribution_on_insufficient_balance() {
     assert!(res.is_err());
 
     // Atomicity: every recipient balance must still be 0 — no partial payment.
-    assert_eq!(token.balance(&alice), 0, "alice must not have received anything");
-    assert_eq!(token.balance(&bob), 0, "bob must not have received anything");
-    assert_eq!(token.balance(&carol), 0, "carol must not have received anything");
+    assert_eq!(
+        token.balance(&alice),
+        0,
+        "alice must not have received anything"
+    );
+    assert_eq!(
+        token.balance(&bob),
+        0,
+        "bob must not have received anything"
+    );
+    assert_eq!(
+        token.balance(&carol),
+        0,
+        "carol must not have received anything"
+    );
 
     // The tipper's balance must be completely unchanged.
-    assert_eq!(token.balance(&tipper), 100, "tipper balance must be unchanged");
+    assert_eq!(
+        token.balance(&tipper),
+        100,
+        "tipper balance must be unchanged"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Authorization
+//
+// Every test above runs under `setup()`, which calls `env.mock_all_auths()` —
+// that makes every `require_auth()` succeed unconditionally, so none of them
+// can tell a wired-up auth check from a missing one. The tests below switch the
+// env to `mock_auths(&[..])`, which authorizes *only* the listed invocations
+// and rejects everything else, so a deleted `require_auth()` line shows up as a
+// call that unexpectedly succeeds.
+//
+// Each negative test is paired with a positive control using the same builder
+// and the correct signer. Without the control, a negative test would still pass
+// if the call failed for some unrelated reason (wrong arg encoding, say), which
+// would make it worthless as a guard.
+// ---------------------------------------------------------------------------
+
+/// The declared `owner` must sign `create_jar` — a third party cannot register
+/// a jar in someone else's name.
+#[test]
+fn create_jar_requires_declared_owner_auth() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let attacker = Address::generate(env);
+    let alice = Address::generate(env);
+    let jar_id = String::from_str(env, "@unauthorized");
+    let splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10000,
+        },
+    ];
+
+    // The attacker signs, but the call declares `owner` as the jar owner.
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "create_jar",
+            args: (owner.clone(), jar_id.clone(), splits.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_create_jar(&owner, &jar_id, &splits);
+    assert!(
+        res.is_err(),
+        "create_jar must reject a caller who is not the declared owner"
+    );
+
+    // Nothing may have been written.
+    assert!(
+        client.try_get_jar(&jar_id).is_err(),
+        "no jar may be created without the owner's authorization"
+    );
+}
+
+/// Positive control for the test above: the same call with the owner signing
+/// must succeed, proving the rejection is about *who* signed and not about the
+/// shape of the mocked invocation.
+#[test]
+fn create_jar_succeeds_with_declared_owner_auth() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let jar_id = String::from_str(env, "@authorized");
+    let splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10000,
+        },
+    ];
+
+    env.mock_auths(&[MockAuth {
+        address: &owner,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "create_jar",
+            args: (owner.clone(), jar_id.clone(), splits.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    client.create_jar(&owner, &jar_id, &splits);
+    assert_eq!(client.get_jar(&jar_id).owner, owner);
+}
+
+/// Only the jar owner may rewrite the splits. This is the check that matters
+/// most: without it anyone on the network could redirect a creator's tips to
+/// their own address.
+#[test]
+fn update_splits_requires_jar_owner_auth() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let attacker = Address::generate(env);
+
+    let jar_id = String::from_str(env, "@victim");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    // The attacker tries to point the whole jar at themselves.
+    let hijacked = vec![
+        env,
+        Split {
+            to: attacker.clone(),
+            bps: 10000,
+        },
+    ];
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "update_splits",
+            args: (jar_id.clone(), hijacked.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_update_splits(&jar_id, &hijacked);
+    assert!(
+        res.is_err(),
+        "update_splits must reject a caller who does not own the jar"
+    );
+
+    // The stored splits must still pay alice, not the attacker.
+    let jar = client.get_jar(&jar_id);
+    assert_eq!(jar.splits.len(), 1);
+    assert_eq!(
+        jar.splits.get(0).unwrap().to,
+        alice,
+        "an unauthorized update must not change the recipient"
+    );
+}
+
+/// Positive control: the owner's own signature is accepted by the same builder.
+#[test]
+fn update_splits_succeeds_with_jar_owner_auth() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+
+    let jar_id = String::from_str(env, "@ownerupd");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    let new_splits = vec![
+        env,
+        Split {
+            to: bob.clone(),
+            bps: 10000,
+        },
+    ];
+    env.mock_auths(&[MockAuth {
+        address: &owner,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "update_splits",
+            args: (jar_id.clone(), new_splits.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    client.update_splits(&jar_id, &new_splits);
+    assert_eq!(client.get_jar(&jar_id).splits.get(0).unwrap().to, bob);
+}
+
+/// `tip` moves the sender's tokens, so it must carry the sender's signature.
+///
+/// The mock here authorizes *only* the token `transfer` the contract makes on
+/// the sender's behalf — deliberately not the `tip` call itself. Withholding
+/// every auth would not prove anything: the SAC's own `transfer` requires the
+/// sender too, so the call would fail even with `from.require_auth()` deleted.
+/// Pre-authorizing the transfer strips that second line of defence away, so the
+/// only thing left standing between this call and a spent balance is `tip`'s
+/// own check.
+#[test]
+fn tip_requires_sender_auth() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+    let token = token::Client::new(env, &s.token);
+    let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let tipper = Address::generate(env);
+    token_admin.mint(&tipper, &1_000);
+
+    let jar_id = String::from_str(env, "@nosig");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    env.mock_auths(&[MockAuth {
+        address: &tipper,
+        invoke: &MockAuthInvoke {
+            contract: &s.token,
+            fn_name: "transfer",
+            args: (tipper.clone(), alice.clone(), 100i128).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_tip(&tipper, &jar_id, &100, &String::from_str(env, "sneaky"));
+    assert!(
+        res.is_err(),
+        "tip must reject a call the sender has not authorized"
+    );
+
+    // No tokens may have moved.
+    assert_eq!(token.balance(&tipper), 1_000, "sender must not be debited");
+    assert_eq!(token.balance(&alice), 0, "recipient must not be credited");
+}
+
+/// A signature from someone other than `from` is not enough either — the auth
+/// must belong to the address whose balance is being spent.
+#[test]
+fn tip_rejects_auth_from_wrong_address() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+    let token = token::Client::new(env, &s.token);
+    let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let tipper = Address::generate(env);
+    let bystander = Address::generate(env);
+    token_admin.mint(&tipper, &1_000);
+
+    let jar_id = String::from_str(env, "@wrongsig");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    // As above, the sender's transfer is pre-authorized so that only `tip`'s own
+    // check can reject this. The `tip` call carries a bystander's signature.
+    let message = String::from_str(env, "not mine to send");
+    env.mock_auths(&[
+        MockAuth {
+            address: &bystander,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract,
+                fn_name: "tip",
+                args: (tipper.clone(), jar_id.clone(), 100i128, message.clone()).into_val(env),
+                sub_invokes: &[],
+            },
+        },
+        MockAuth {
+            address: &tipper,
+            invoke: &MockAuthInvoke {
+                contract: &s.token,
+                fn_name: "transfer",
+                args: (tipper.clone(), alice.clone(), 100i128).into_val(env),
+                sub_invokes: &[],
+            },
+        },
+    ]);
+
+    let res = client.try_tip(&tipper, &jar_id, &100, &message);
+    assert!(
+        res.is_err(),
+        "tip must reject a signature from an address other than the sender"
+    );
+    assert_eq!(token.balance(&tipper), 1_000, "sender must not be debited");
+    assert_eq!(token.balance(&alice), 0, "recipient must not be credited");
+}
+
+/// Positive control: the sender's signature, covering both the `tip` call and
+/// the token `transfer` it makes on their behalf, is accepted.
+#[test]
+fn tip_succeeds_with_sender_auth() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+    let token = token::Client::new(env, &s.token);
+    let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let tipper = Address::generate(env);
+    token_admin.mint(&tipper, &1_000);
+
+    let jar_id = String::from_str(env, "@goodsig");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    let message = String::from_str(env, "thanks");
+    env.mock_auths(&[MockAuth {
+        address: &tipper,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "tip",
+            args: (tipper.clone(), jar_id.clone(), 100i128, message.clone()).into_val(env),
+            sub_invokes: &[MockAuthInvoke {
+                contract: &s.token,
+                fn_name: "transfer",
+                args: (tipper.clone(), alice.clone(), 100i128).into_val(env),
+                sub_invokes: &[],
+            }],
+        },
+    }]);
+
+    client.tip(&tipper, &jar_id, &100, &message);
+    assert_eq!(token.balance(&alice), 100);
+    assert_eq!(token.balance(&tipper), 900);
 }

@@ -19,6 +19,12 @@ use soroban_sdk::{
 const BPS_DENOM: u32 = 10_000;
 /// Safety bound so a single tip can't fan out to an unbounded recipient list.
 const MAX_RECIPIENTS: u32 = 20;
+/// Longest tip message, in bytes, that may ride along in the `tip` event.
+///
+/// The message is echoed verbatim into the event payload, so an unbounded
+/// string inflates the transaction and every downstream copy the indexer has
+/// to store and serve. 280 matches the character budget the tip form implies.
+const MAX_MESSAGE_LEN: u32 = 280;
 
 /// One recipient and the share of every tip they receive, in basis points.
 #[contracttype]
@@ -57,6 +63,7 @@ pub enum Error {
     InvalidAmount = 5,
     TooManyRecipients = 6,
     DuplicateRecipient = 7,
+    MessageTooLong = 8,
 }
 
 #[contract]
@@ -81,9 +88,13 @@ impl TipSplitter {
             panic_with_error!(&env, Error::JarExists);
         }
         Self::validate_splits(&env, &splits);
-        env.storage()
-            .persistent()
-            .set(&key, &Jar { owner: owner.clone(), splits });
+        env.storage().persistent().set(
+            &key,
+            &Jar {
+                owner: owner.clone(),
+                splits,
+            },
+        );
 
         env.events()
             .publish((symbol_short!("jar_crtd"), jar_id), owner);
@@ -110,10 +121,16 @@ impl TipSplitter {
 
     /// Send a tip. Transfers `amount` of USDC from `from`, split across the jar's
     /// recipients atomically, then emits a `("tip", jar_id)` event.
+    ///
+    /// `message` may be at most `MAX_MESSAGE_LEN` bytes; it is rejected before
+    /// any funds move.
     pub fn tip(env: Env, from: Address, jar_id: String, amount: i128, message: String) {
         from.require_auth();
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
+        }
+        if message.len() > MAX_MESSAGE_LEN {
+            panic_with_error!(&env, Error::MessageTooLong);
         }
 
         let jar: Jar = env
@@ -191,12 +208,11 @@ impl TipSplitter {
         }
         let mut total: u32 = 0;
         for i in 0..n {
-            let bps = splits.get(i).unwrap().bps;
-            if bps == 0 {
+            let split = splits.get(i).unwrap();
+            if split.bps == 0 {
                 panic_with_error!(env, Error::InvalidSplits);
             }
-            total += bps;
-            let split = splits.get(i).unwrap();
+            total += split.bps;
             // Pairwise comparison rather than a set: `n` is capped at
             // MAX_RECIPIENTS (20), so this is at most 190 comparisons, and a hash
             // set would need an allocator we don't have under `no_std`.
@@ -205,7 +221,6 @@ impl TipSplitter {
                     panic_with_error!(env, Error::DuplicateRecipient);
                 }
             }
-            total += split.bps;
         }
         if total != BPS_DENOM {
             panic_with_error!(env, Error::InvalidSplits);

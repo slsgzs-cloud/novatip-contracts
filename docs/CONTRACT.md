@@ -12,6 +12,8 @@ basis-point shares, atomically, in one transaction.
   `10_000` (= 100%).
 - **USDC token** — the Stellar Asset Contract id is fixed at deploy time; every
   tip settles in that asset.
+- **Message** — the free-text note a supporter attaches to a tip. Capped at
+  `280` bytes (`MAX_MESSAGE_LEN`) and echoed into the `tip` event.
 
 ## Types
 
@@ -68,6 +70,27 @@ transferred amounts: a recipient with a valid non-zero `bps` can still receive
 `0` on a small tip, because `amount * bps / 10_000` truncates (e.g. `bps: 100`
 on a tip of `50` yields `0`).
 
+`tip` runs its own checks before touching the token contract:
+
+- `amount` must be greater than `0` — `InvalidAmount`.
+- `message` must be at most `280` bytes (`MAX_MESSAGE_LEN`) — `MessageTooLong`.
+
+Both are checked ahead of the jar lookup and the transfer loop, so a rejected
+tip moves no funds.
+
+The message is copied verbatim into the `tip` event, which the indexer stores
+and the frontend renders, so an unbounded string would inflate the transaction
+and every downstream copy of it. **Clients should enforce the same 280 bound**
+before submitting, so an over-long message fails in the form rather than as a
+rejected transaction.
+
+Note that the limit is measured in **bytes, not characters** — `String::len()`
+counts UTF-8 bytes. A 280-character message of plain ASCII fits exactly, but
+accented characters (2 bytes) or emoji (up to 4) push the byte count past the
+character count. A frontend that counts JavaScript string length will let
+through messages the contract rejects; count `new TextEncoder().encode(msg).length`
+instead.
+
 ### Splitting rules
 
 - Each non-final recipient receives `amount * bps / 10_000` (integer division).
@@ -86,6 +109,7 @@ on a tip of `50` yields `0`).
 | 5 | `InvalidAmount` | Tip amount ≤ 0. |
 | 6 | `TooManyRecipients` | More than 20 recipients. |
 | 7 | `DuplicateRecipient` | The same address appears more than once in the splits. |
+| 8 | `MessageTooLong` | Tip message exceeds 280 bytes. |
 
 ## Events
 
@@ -109,7 +133,8 @@ log or an indexer's jar list just to validate a name.
 - **Data:** `(from: Address, amount: i128, message: String)`
 
 The backend indexer subscribes to this event to update balances, leaderboards,
-and notifications.
+and notifications. `message` is at most 280 bytes, so the payload size is
+bounded and a `varchar(280)` column is enough to store it.
 
 ## Jar discovery — design decision
 
