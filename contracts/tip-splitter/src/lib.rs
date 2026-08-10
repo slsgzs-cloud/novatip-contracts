@@ -157,6 +157,16 @@ impl TipSplitter {
             .unwrap_or_else(|| panic_with_error!(&env, Error::JarNotFound))
     }
 
+    /// Whether `jar_id` is already registered.
+    ///
+    /// A slug-availability check would otherwise have to call `get_jar` and
+    /// catch the `JarNotFound` panic, which is awkward from the SDK. This
+    /// returns a plain `bool` and reads one storage key, so the onboarding form
+    /// can run it on every (debounced) keystroke.
+    pub fn jar_exists(env: Env, jar_id: String) -> bool {
+        env.storage().persistent().has(&DataKey::Jar(jar_id))
+    }
+
     /// The USDC token address tips are settled in.
     pub fn get_token(env: Env) -> Address {
         env.storage()
