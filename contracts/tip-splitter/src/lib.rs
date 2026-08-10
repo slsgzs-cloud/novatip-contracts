@@ -6,7 +6,7 @@
 //! the same transaction or the whole tip reverts.
 //!
 //! Jar discovery is intentionally event-driven: `create_jar` emits a
-//! `jar_created` event, and indexers reconstruct the full jar list by scanning
+//! `jar_crtd` event, and indexers reconstruct the full jar list by scanning
 //! those events. This keeps on-chain storage O(1) regardless of how many jars
 //! are ever registered.
 
@@ -72,7 +72,7 @@ impl TipSplitter {
 
     /// Register a new tip jar. `owner` must authorize. Splits must sum to 100%
     /// and may not name the same recipient twice.
-    /// Emits a `jar_created` event so indexers can discover all jars from the
+    /// Emits a `jar_crtd` event so indexers can discover all jars from the
     /// event log without any on-chain list.
     pub fn create_jar(env: Env, owner: Address, jar_id: String, splits: Vec<Split>) {
         owner.require_auth();
@@ -181,12 +181,11 @@ impl TipSplitter {
         }
         let mut total: u32 = 0;
         for i in 0..n {
-            let bps = splits.get(i).unwrap().bps;
-            if bps == 0 {
+            let split = splits.get(i).unwrap();
+            if split.bps == 0 {
                 panic_with_error!(env, Error::InvalidSplits);
             }
-            total += bps;
-            let split = splits.get(i).unwrap();
+            total += split.bps;
             // Pairwise comparison rather than a set: `n` is capped at
             // MAX_RECIPIENTS (20), so this is at most 190 comparisons, and a hash
             // set would need an allocator we don't have under `no_std`.
@@ -195,7 +194,6 @@ impl TipSplitter {
                     panic_with_error!(env, Error::DuplicateRecipient);
                 }
             }
-            total += split.bps;
         }
         if total != BPS_DENOM {
             panic_with_error!(env, Error::InvalidSplits);
