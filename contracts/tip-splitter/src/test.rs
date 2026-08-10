@@ -457,6 +457,125 @@ fn create_jar_rejects_duplicate_slug() {
     assert_eq!(res, Err(Ok(Error::JarExists.into())));
 }
 
+/// `jar_exists` flips from false to true on registration, and matches the slug
+/// exactly — a prefix or a different slug must not read as taken.
+#[test]
+fn jar_exists_tracks_registration() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let jar_id = String::from_str(env, "@alice");
+
+    assert!(
+        !client.jar_exists(&jar_id),
+        "slug must be free before registration"
+    );
+
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    assert!(
+        client.jar_exists(&jar_id),
+        "slug must be taken after registration"
+    );
+    assert!(
+        !client.jar_exists(&String::from_str(env, "@bob")),
+        "an unrelated slug must still be free"
+    );
+    // The onboarding check relies on exact matching: "@ali" is its own slug.
+    assert!(
+        !client.jar_exists(&String::from_str(env, "@ali")),
+        "a prefix of a taken slug must still be free"
+    );
+}
+
+/// A `create_jar` that fails validation must leave the slug free — otherwise
+/// the availability check would report a name as taken that nobody owns.
+#[test]
+fn jar_exists_is_false_for_rejected_jar() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+    let jar_id = String::from_str(env, "@rejected");
+
+    // 6000 + 3000 = 9000, so the jar is never stored.
+    let res = client.try_create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 6000,
+            },
+            Split {
+                to: bob.clone(),
+                bps: 3000,
+            },
+        ],
+    );
+    assert!(res.is_err());
+
+    assert!(!client.jar_exists(&jar_id));
+}
+
+/// `update_splits` rewrites the same key, so the slug must stay registered.
+#[test]
+fn jar_exists_stays_true_after_update_splits() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+    let jar_id = String::from_str(env, "@steady");
+
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+    client.update_splits(
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 5000,
+            },
+            Split {
+                to: bob.clone(),
+                bps: 5000,
+            },
+        ],
+    );
+
+    assert!(client.jar_exists(&jar_id));
+}
+
 #[test]
 fn tip_on_missing_jar_fails() {
     let s = setup();

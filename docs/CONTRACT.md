@@ -29,9 +29,26 @@ struct Jar   { owner: Address, splits: Vec<Split> }
 | `__constructor(admin, token)` | — | Deploy-time init. Stores the admin and USDC token address. |
 | `create_jar(owner, jar_id, splits)` | `owner` | Register a new jar. Fails if the slug exists or splits are invalid. Emits a `jar_crtd` event. |
 | `update_splits(jar_id, splits)` | jar `owner` | Replace a jar's splits. Subject to the same validation as `create_jar`. |
-| `tip(from, jar_id, amount, message)` | `from` | Transfer `amount` USDC from `from`, split across the jar's recipients. `message` is capped at 280 bytes. |
-| `get_jar(jar_id) -> Jar` | — | Read a jar's configuration. |
+| `tip(from, jar_id, amount, message)` | `from` | Transfer `amount` USDC from `from`, split across the jar's recipients. |
+| `get_jar(jar_id) -> Jar` | — | Read a jar's configuration. Panics with `JarNotFound` if the slug is free. |
+| `jar_exists(jar_id) -> bool` | — | Whether the slug is already registered. |
 | `get_token() -> Address` | — | The USDC token address tips settle in. |
+
+### Checking slug availability
+
+`jar_exists` is the intended way to test whether a slug is taken. The
+alternative — calling `get_jar` and catching the `JarNotFound` panic — is
+awkward from the SDK, since a missing jar is an ordinary answer here rather
+than an error. `jar_exists` reads one persistent key and returns a plain
+`bool`, so the onboarding form can call it on every (debounced) keystroke.
+
+Matching is exact: `jar_exists("@ali")` is `false` while `"@alice"` is taken.
+A jar rejected by validation is never stored, so its slug stays free.
+
+Note that availability is not a reservation. Between the check and the
+`create_jar` call, another transaction can claim the slug — `create_jar` still
+panics with `JarExists`, and clients must handle that rather than treating a
+`false` from `jar_exists` as a guarantee.
 
 ### Validation rules
 
@@ -105,6 +122,10 @@ Indexers must subscribe to this event to build and maintain the full list of
 registered jars. There is no on-chain `get_jar_ids` function — event scanning
 is the canonical discovery mechanism. This keeps `create_jar` cost constant
 (O(1) storage writes) regardless of how many jars have been created.
+
+Enumeration and existence are separate concerns: `jar_exists` answers "is this
+one slug taken?" straight from storage, so a client never has to scan the event
+log or an indexer's jar list just to validate a name.
 
 ### `tip` — published on every successful tip
 
