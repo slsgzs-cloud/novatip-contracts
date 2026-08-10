@@ -6,7 +6,7 @@
 //! the same transaction or the whole tip reverts.
 //!
 //! Jar discovery is intentionally event-driven: `create_jar` emits a
-//! `jar_created` event, and indexers reconstruct the full jar list by scanning
+//! `jar_crtd` event, and indexers reconstruct the full jar list by scanning
 //! those events. This keeps on-chain storage O(1) regardless of how many jars
 //! are ever registered.
 
@@ -19,6 +19,12 @@ use soroban_sdk::{
 const BPS_DENOM: u32 = 10_000;
 /// Safety bound so a single tip can't fan out to an unbounded recipient list.
 const MAX_RECIPIENTS: u32 = 20;
+/// Longest tip message, in bytes, that may ride along in the `tip` event.
+///
+/// The message is echoed verbatim into the event payload, so an unbounded
+/// string inflates the transaction and every downstream copy the indexer has
+/// to store and serve. 280 matches the character budget the tip form implies.
+const MAX_MESSAGE_LEN: u32 = 280;
 
 /// One recipient and the share of every tip they receive, in basis points.
 #[contracttype]
@@ -57,6 +63,7 @@ pub enum Error {
     InvalidAmount = 5,
     TooManyRecipients = 6,
     DuplicateRecipient = 7,
+    MessageTooLong = 8,
 }
 
 #[contract]
@@ -72,7 +79,7 @@ impl TipSplitter {
 
     /// Register a new tip jar. `owner` must authorize. Splits must sum to 100%
     /// and may not name the same recipient twice.
-    /// Emits a `jar_created` event so indexers can discover all jars from the
+    /// Emits a `jar_crtd` event so indexers can discover all jars from the
     /// event log without any on-chain list.
     pub fn create_jar(env: Env, owner: Address, jar_id: String, splits: Vec<Split>) {
         owner.require_auth();
@@ -114,10 +121,16 @@ impl TipSplitter {
 
     /// Send a tip. Transfers `amount` of USDC from `from`, split across the jar's
     /// recipients atomically, then emits a `("tip", jar_id)` event.
+    ///
+    /// `message` may be at most `MAX_MESSAGE_LEN` bytes; it is rejected before
+    /// any funds move.
     pub fn tip(env: Env, from: Address, jar_id: String, amount: i128, message: String) {
         from.require_auth();
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
+        }
+        if message.len() > MAX_MESSAGE_LEN {
+            panic_with_error!(&env, Error::MessageTooLong);
         }
 
         let jar: Jar = env
@@ -161,6 +174,16 @@ impl TipSplitter {
             .unwrap_or_else(|| panic_with_error!(&env, Error::JarNotFound))
     }
 
+    /// Whether `jar_id` is already registered.
+    ///
+    /// A slug-availability check would otherwise have to call `get_jar` and
+    /// catch the `JarNotFound` panic, which is awkward from the SDK. This
+    /// returns a plain `bool` and reads one storage key, so the onboarding form
+    /// can run it on every (debounced) keystroke.
+    pub fn jar_exists(env: Env, jar_id: String) -> bool {
+        env.storage().persistent().has(&DataKey::Jar(jar_id))
+    }
+
     /// The USDC token address tips are settled in.
     pub fn get_token(env: Env) -> Address {
         env.storage()
@@ -169,12 +192,17 @@ impl TipSplitter {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
     }
 
-    /// Validate that splits are non-empty, within bounds, carry a non-zero
-    /// share each, and sum to 100%.
+    /// Validate that splits are non-empty, within bounds, carry a share that is
+    /// neither zero nor above 100% each, and sum to exactly 100%.
     ///
     /// A `bps == 0` entry would never be paid — `tip` skips zero shares — so it
     /// is dead weight that still consumes a slot against `MAX_RECIPIENTS` and
     /// misleads clients into showing a collaborator who never receives funds.
+    ///
+    /// A `bps > BPS_DENOM` entry claims more than the whole tip, so it can never
+    /// belong to a set summing to 100%. Rejecting it per entry also bounds the
+    /// running total at `MAX_RECIPIENTS * BPS_DENOM` (200_000), which keeps the
+    /// accumulator far below `u32::MAX` by construction.
     fn validate_splits(env: &Env, splits: &Vec<Split>) {
         let n = splits.len();
         if n == 0 {
@@ -190,6 +218,19 @@ impl TipSplitter {
                 panic_with_error!(env, Error::InvalidSplits);
             }
             total += split.bps;
+            let bps = split.bps;
+            if bps == 0 || bps > BPS_DENOM {
+                panic_with_error!(env, Error::InvalidSplits);
+            }
+            // `checked_add` rather than `+=`: `bps` is caller-supplied, and an
+            // overflow must surface as the same typed `InvalidSplits` every
+            // other rejection returns, not as an opaque wasm trap. The bound
+            // above already makes overflow unreachable, so this is belt and
+            // braces — but it puts the invariant in the code rather than
+            // resting on `overflow-checks = true` in the release profile.
+            total = total
+                .checked_add(bps)
+                .unwrap_or_else(|| panic_with_error!(env, Error::InvalidSplits));
             // Pairwise comparison rather than a set: `n` is capped at
             // MAX_RECIPIENTS (20), so this is at most 190 comparisons, and a hash
             // set would need an allocator we don't have under `no_std`.
