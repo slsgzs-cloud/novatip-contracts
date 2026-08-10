@@ -473,6 +473,35 @@ fn tip_on_missing_jar_fails() {
     assert_eq!(res, Err(Ok(Error::JarNotFound.into())));
 }
 
+/// `update_splits` runs the same lookup-then-panic path as `tip`, so an
+/// unregistered slug must be rejected rather than quietly creating a jar.
+#[test]
+fn update_splits_on_missing_jar_fails() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let alice = Address::generate(env);
+    // Valid splits, so a missing jar is the only thing that can fail this.
+    let splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10000,
+        },
+    ];
+
+    let jar_id = String::from_str(env, "@never-registered");
+    let res = client.try_update_splits(&jar_id, &splits);
+    assert_eq!(res, Err(Ok(Error::JarNotFound.into())));
+
+    // The failed update must not have brought the jar into existence.
+    assert!(
+        client.try_get_jar(&jar_id).is_err(),
+        "update_splits must not create a jar as a side effect"
+    );
+}
+
 #[test]
 fn tip_rejects_nonpositive_amount() {
     let s = setup();
