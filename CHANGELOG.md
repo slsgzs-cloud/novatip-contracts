@@ -9,6 +9,9 @@ All notable changes to `novatip-contracts` are documented here.
 - Edge case tests for single recipient tip, max recipients rejection, and jar ID tracking
 - `JarIds` storage key to track registered slugs at the instance level
 - Tests covering zero-bps rejection on `create_jar` (leading, trailing, and sole entry) and on `update_splits`
+- `MAX_MESSAGE_LEN` (280 bytes) bound on the `tip` message, with a new
+  `MessageTooLong` error (code 8, appended so existing codes are unchanged)
+- Tests covering a message one byte over the limit and one at exactly the limit
 
 ### Changed
 - `validate_splits()` now rejects any split with `bps == 0` (`InvalidSplits`).
@@ -17,6 +20,12 @@ All notable changes to `novatip-contracts` are documented here.
   both `create_jar` and `update_splits`; jars written before this change are
   unaffected on read but must drop zero-bps entries before their next
   `update_splits` call.
+- `tip()` now rejects a `message` longer than 280 bytes (`MessageTooLong`)
+  before any funds move. The message is echoed into the `tip` event, so an
+  unbounded string inflated the transaction and every copy the indexer stored
+  and served. Clients should enforce the same bound in the tip form — and count
+  UTF-8 bytes, not characters, since emoji and accented characters cost more
+  than one byte each.
 
 ## [0.1.0] - 2025-07-01
 
