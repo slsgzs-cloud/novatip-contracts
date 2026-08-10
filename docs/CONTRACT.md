@@ -8,8 +8,8 @@ basis-point shares, atomically, in one transaction.
 - **Jar** — a creator's tip target, identified by a public slug (e.g. `@alice`).
   Holds an `owner` and a list of `Split`s.
 - **Split** — a recipient `Address` and its share in basis points (`bps`).
-  Every split must have `1 <= bps <= 10_000`, and all splits in a jar must sum
-  to exactly `10_000` (= 100%).
+  Every split must have `bps >= 1`, all splits in a jar must sum to exactly
+  `10_000` (= 100%), and no address may appear more than once.
 - **USDC token** — the Stellar Asset Contract id is fixed at deploy time; every
   tip settles in that asset.
 - **Message** — the free-text note a supporter attaches to a tip. Capped at
@@ -52,11 +52,12 @@ panics with `JarExists`, and clients must handle that rather than treating a
 
 ### Validation rules
 
-`create_jar` and `update_splits` run the same checks on the supplied splits:
+`create_jar` and `update_splits` share one validator, so both enforce all of:
 
 - The list must be non-empty — `InvalidSplits`.
 - At most 20 entries (`MAX_RECIPIENTS`) — `TooManyRecipients`.
 - **No entry may have `bps == 0`** — `InvalidSplits`.
+- **No address may appear twice** — `DuplicateRecipient`.
 - **No entry may have `bps > 10_000`** — `InvalidSplits`.
 - The `bps` values must sum to exactly `10_000` — `InvalidSplits`.
 
@@ -71,6 +72,15 @@ transferred amounts: a recipient with a valid non-zero `bps` can still receive
 `0` on a small tip, because `amount * bps / 10_000` truncates (e.g. `bps: 100`
 on a tip of `50` yields `0`).
 
+Duplicates are likewise rejected rather than merged. A repeated address is not a
+loss-of-funds bug — the shares still total 100% — but it makes `tip` issue
+several separate transfers to one destination in a single call, wasting fees,
+and leaves an on-chain record that per-collaborator accounting has to
+de-duplicate after the fact. Clients that want to let a user enter the same
+collaborator twice should sum the shares before submitting.
+
+The check is a pairwise comparison over the vector, so position doesn't matter:
+`[a, b, a]` is rejected just as `[a, a, b]` is.
 A `bps > 10_000` entry claims more than the whole tip, so it could never belong
 to a set summing to 100% — the sum check would reject it anyway. It is rejected
 per entry because that also bounds the running total: with at most 20 entries
