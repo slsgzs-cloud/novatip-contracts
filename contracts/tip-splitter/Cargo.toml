@@ -2,6 +2,9 @@
 name = "tip-splitter"
 version = "0.1.0"
 edition = "2021"
+# Must match the channel pinned in rust-toolchain.toml. Declaring it lets the
+# MSRV-aware resolver keep transitive deps off newer editions we can't parse.
+rust-version = "1.84"
 publish = false
 
 [lib]

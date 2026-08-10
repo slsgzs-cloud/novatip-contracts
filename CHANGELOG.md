@@ -11,6 +11,15 @@ All notable changes to `novatip-contracts` are documented here.
 - Tests covering zero-bps rejection on `create_jar` (leading, trailing, and sole entry) and on `update_splits`
 - Tests covering a share above 100% and a `bps` set whose sum overflows `u32`,
   on both `create_jar` and `update_splits`
+- `jar_exists(jar_id) -> bool` view function, so a slug-availability check no
+  longer has to call `get_jar` and catch the `JarNotFound` panic. Reads one
+  persistent key, matches slugs exactly, and is cheap enough for the debounced
+  onboarding check. Not yet exposed from `@novatip/sdk`.
+- Tests covering `jar_exists` before and after registration, against a rejected
+  jar, and across `update_splits`
+- `MAX_MESSAGE_LEN` (280 bytes) bound on the `tip` message, with a new
+  `MessageTooLong` error (code 8, appended so existing codes are unchanged)
+- Tests covering a message one byte over the limit and one at exactly the limit
 
 ### Changed
 - `validate_splits()` now rejects any split with `bps == 0` (`InvalidSplits`).

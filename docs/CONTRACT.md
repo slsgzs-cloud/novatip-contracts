@@ -12,6 +12,8 @@ basis-point shares, atomically, in one transaction.
   to exactly `10_000` (= 100%).
 - **USDC token** — the Stellar Asset Contract id is fixed at deploy time; every
   tip settles in that asset.
+- **Message** — the free-text note a supporter attaches to a tip. Capped at
+  `280` bytes (`MAX_MESSAGE_LEN`) and echoed into the `tip` event.
 
 ## Types
 
@@ -28,8 +30,25 @@ struct Jar   { owner: Address, splits: Vec<Split> }
 | `create_jar(owner, jar_id, splits)` | `owner` | Register a new jar. Fails if the slug exists or splits are invalid. Emits a `jar_crtd` event. |
 | `update_splits(jar_id, splits)` | jar `owner` | Replace a jar's splits. Subject to the same validation as `create_jar`. |
 | `tip(from, jar_id, amount, message)` | `from` | Transfer `amount` USDC from `from`, split across the jar's recipients. |
-| `get_jar(jar_id) -> Jar` | — | Read a jar's configuration. |
+| `get_jar(jar_id) -> Jar` | — | Read a jar's configuration. Panics with `JarNotFound` if the slug is free. |
+| `jar_exists(jar_id) -> bool` | — | Whether the slug is already registered. |
 | `get_token() -> Address` | — | The USDC token address tips settle in. |
+
+### Checking slug availability
+
+`jar_exists` is the intended way to test whether a slug is taken. The
+alternative — calling `get_jar` and catching the `JarNotFound` panic — is
+awkward from the SDK, since a missing jar is an ordinary answer here rather
+than an error. `jar_exists` reads one persistent key and returns a plain
+`bool`, so the onboarding form can call it on every (debounced) keystroke.
+
+Matching is exact: `jar_exists("@ali")` is `false` while `"@alice"` is taken.
+A jar rejected by validation is never stored, so its slug stays free.
+
+Note that availability is not a reservation. Between the check and the
+`create_jar` call, another transaction can claim the slug — `create_jar` still
+panics with `JarExists`, and clients must handle that rather than treating a
+`false` from `jar_exists` as a guarantee.
 
 ### Validation rules
 
@@ -85,6 +104,7 @@ the code, so flipping that profile setting cannot turn it into a bypass.
 | 5 | `InvalidAmount` | Tip amount ≤ 0. |
 | 6 | `TooManyRecipients` | More than 20 recipients. |
 | 7 | `DuplicateRecipient` | The same address appears more than once in the splits. |
+| 8 | `MessageTooLong` | Tip message exceeds 280 bytes. |
 
 ## Events
 
@@ -98,13 +118,18 @@ registered jars. There is no on-chain `get_jar_ids` function — event scanning
 is the canonical discovery mechanism. This keeps `create_jar` cost constant
 (O(1) storage writes) regardless of how many jars have been created.
 
+Enumeration and existence are separate concerns: `jar_exists` answers "is this
+one slug taken?" straight from storage, so a client never has to scan the event
+log or an indexer's jar list just to validate a name.
+
 ### `tip` — published on every successful tip
 
 - **Topics:** `(symbol "tip", jar_id: String)`
 - **Data:** `(from: Address, amount: i128, message: String)`
 
 The backend indexer subscribes to this event to update balances, leaderboards,
-and notifications.
+and notifications. `message` is at most 280 bytes, so the payload size is
+bounded and a `varchar(280)` column is enough to store it.
 
 ## Jar discovery — design decision
 
