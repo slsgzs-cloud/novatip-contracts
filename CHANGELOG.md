@@ -9,6 +9,8 @@ All notable changes to `novatip-contracts` are documented here.
 - Edge case tests for single recipient tip, max recipients rejection, and jar ID tracking
 - `JarIds` storage key to track registered slugs at the instance level
 - Tests covering zero-bps rejection on `create_jar` (leading, trailing, and sole entry) and on `update_splits`
+- Tests covering a share above 100% and a `bps` set whose sum overflows `u32`,
+  on both `create_jar` and `update_splits`
 - `jar_exists(jar_id) -> bool` view function, so a slug-availability check no
   longer has to call `get_jar` and catch the `JarNotFound` panic. Reads one
   persistent key, matches slugs exactly, and is cheap enough for the debounced
@@ -26,12 +28,19 @@ All notable changes to `novatip-contracts` are documented here.
   both `create_jar` and `update_splits`; jars written before this change are
   unaffected on read but must drop zero-bps entries before their next
   `update_splits` call.
-- `tip()` now rejects a `message` longer than 280 bytes (`MessageTooLong`)
-  before any funds move. The message is echoed into the `tip` event, so an
-  unbounded string inflated the transaction and every copy the indexer stored
-  and served. Clients should enforce the same bound in the tip form — and count
-  UTF-8 bytes, not characters, since emoji and accented characters cost more
-  than one byte each.
+- `validate_splits()` now rejects any split with `bps > 10_000` and accumulates
+  the total with `checked_add`, both failing with `InvalidSplits`. `bps` is
+  caller-supplied and unbounded, so a set of shares could previously sum past
+  `u32::MAX`. That was caught by `overflow-checks = true` in the release
+  profile, so no invalid jar was ever created — but it surfaced as an opaque
+  wasm trap instead of error code 4, and the guarantee lived in `Cargo.toml`
+  rather than in the validator. Correctness no longer depends on that profile
+  setting.
+
+### Fixed
+- `validate_splits()` added each entry's `bps` to the running total twice, so
+  a correct set summing to `10_000` computed as `20_000` and every
+  `create_jar` and `update_splits` call was rejected with `InvalidSplits`.
 
 ## [0.1.0] - 2025-07-01
 

@@ -8,8 +8,8 @@ basis-point shares, atomically, in one transaction.
 - **Jar** — a creator's tip target, identified by a public slug (e.g. `@alice`).
   Holds an `owner` and a list of `Split`s.
 - **Split** — a recipient `Address` and its share in basis points (`bps`).
-  Every split must have `bps >= 1`, and all splits in a jar must sum to exactly
-  `10_000` (= 100%).
+  Every split must have `1 <= bps <= 10_000`, and all splits in a jar must sum
+  to exactly `10_000` (= 100%).
 - **USDC token** — the Stellar Asset Contract id is fixed at deploy time; every
   tip settles in that asset.
 - **Message** — the free-text note a supporter attaches to a tip. Capped at
@@ -57,6 +57,7 @@ panics with `JarExists`, and clients must handle that rather than treating a
 - The list must be non-empty — `InvalidSplits`.
 - At most 20 entries (`MAX_RECIPIENTS`) — `TooManyRecipients`.
 - **No entry may have `bps == 0`** — `InvalidSplits`.
+- **No entry may have `bps > 10_000`** — `InvalidSplits`.
 - The `bps` values must sum to exactly `10_000` — `InvalidSplits`.
 
 A `bps == 0` entry is rejected rather than accepted-and-ignored. Such a
@@ -70,26 +71,20 @@ transferred amounts: a recipient with a valid non-zero `bps` can still receive
 `0` on a small tip, because `amount * bps / 10_000` truncates (e.g. `bps: 100`
 on a tip of `50` yields `0`).
 
-`tip` runs its own checks before touching the token contract:
+A `bps > 10_000` entry claims more than the whole tip, so it could never belong
+to a set summing to 100% — the sum check would reject it anyway. It is rejected
+per entry because that also bounds the running total: with at most 20 entries
+of at most `10_000` each, the accumulator can never exceed `200_000`, far below
+`u32::MAX`. The sum is additionally accumulated with `checked_add`, which fails
+with `InvalidSplits` rather than trapping.
 
-- `amount` must be greater than `0` — `InvalidAmount`.
-- `message` must be at most `280` bytes (`MAX_MESSAGE_LEN`) — `MessageTooLong`.
-
-Both are checked ahead of the jar lookup and the transfer loop, so a rejected
-tip moves no funds.
-
-The message is copied verbatim into the `tip` event, which the indexer stores
-and the frontend renders, so an unbounded string would inflate the transaction
-and every downstream copy of it. **Clients should enforce the same 280 bound**
-before submitting, so an over-long message fails in the form rather than as a
-rejected transaction.
-
-Note that the limit is measured in **bytes, not characters** — `String::len()`
-counts UTF-8 bytes. A 280-character message of plain ASCII fits exactly, but
-accented characters (2 bytes) or emoji (up to 4) push the byte count past the
-character count. A frontend that counts JavaScript string length will let
-through messages the contract rejects; count `new TextEncoder().encode(msg).length`
-instead.
+This matters because `bps` is caller-supplied and unbounded in the wire type.
+Before, a set of shares whose true sum exceeded `u32::MAX` relied on
+`overflow-checks = true` in the release profile to trap — which reverted the
+transaction, so the 100% invariant did hold, but clients saw an opaque wasm
+error instead of error code 4, and the guarantee lived in `Cargo.toml` rather
+than in the validator. Both the per-entry bound and `checked_add` now put it in
+the code, so flipping that profile setting cannot turn it into a bypass.
 
 ### Splitting rules
 
@@ -105,7 +100,7 @@ instead.
 | 1 | `NotInitialized` | Token address missing (should never happen post-deploy). |
 | 2 | `JarExists` | Slug already registered. |
 | 3 | `JarNotFound` | Slug not registered. |
-| 4 | `InvalidSplits` | Empty list, an entry with `bps == 0`, or bps don't sum to 10_000. |
+| 4 | `InvalidSplits` | Empty list, an entry with `bps == 0` or `bps > 10_000`, a sum that overflows `u32`, or bps that don't sum to 10_000. |
 | 5 | `InvalidAmount` | Tip amount ≤ 0. |
 | 6 | `TooManyRecipients` | More than 20 recipients. |
 | 7 | `DuplicateRecipient` | The same address appears more than once in the splits. |
