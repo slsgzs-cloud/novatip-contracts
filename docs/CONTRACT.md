@@ -12,6 +12,8 @@ basis-point shares, atomically, in one transaction.
   `10_000` (= 100%), and no address may appear more than once.
 - **USDC token** — the Stellar Asset Contract id is fixed at deploy time; every
   tip settles in that asset.
+- **Message** — the free-text note a supporter attaches to a tip. Capped at
+  `280` bytes (`MAX_MESSAGE_LEN`) and echoed into the `tip` event.
 
 ## Types
 
@@ -28,8 +30,25 @@ struct Jar   { owner: Address, splits: Vec<Split> }
 | `create_jar(owner, jar_id, splits)` | `owner` | Register a new jar. Fails if the slug exists or splits are invalid. Emits a `jar_crtd` event. |
 | `update_splits(jar_id, splits)` | jar `owner` | Replace a jar's splits. Subject to the same validation as `create_jar`. |
 | `tip(from, jar_id, amount, message)` | `from` | Transfer `amount` USDC from `from`, split across the jar's recipients. |
-| `get_jar(jar_id) -> Jar` | — | Read a jar's configuration. |
+| `get_jar(jar_id) -> Jar` | — | Read a jar's configuration. Panics with `JarNotFound` if the slug is free. |
+| `jar_exists(jar_id) -> bool` | — | Whether the slug is already registered. |
 | `get_token() -> Address` | — | The USDC token address tips settle in. |
+
+### Checking slug availability
+
+`jar_exists` is the intended way to test whether a slug is taken. The
+alternative — calling `get_jar` and catching the `JarNotFound` panic — is
+awkward from the SDK, since a missing jar is an ordinary answer here rather
+than an error. `jar_exists` reads one persistent key and returns a plain
+`bool`, so the onboarding form can call it on every (debounced) keystroke.
+
+Matching is exact: `jar_exists("@ali")` is `false` while `"@alice"` is taken.
+A jar rejected by validation is never stored, so its slug stays free.
+
+Note that availability is not a reservation. Between the check and the
+`create_jar` call, another transaction can claim the slug — `create_jar` still
+panics with `JarExists`, and clients must handle that rather than treating a
+`false` from `jar_exists` as a guarantee.
 
 ### Validation rules
 
@@ -39,6 +58,7 @@ struct Jar   { owner: Address, splits: Vec<Split> }
 - At most 20 entries (`MAX_RECIPIENTS`) — `TooManyRecipients`.
 - **No entry may have `bps == 0`** — `InvalidSplits`.
 - **No address may appear twice** — `DuplicateRecipient`.
+- **No entry may have `bps > 10_000`** — `InvalidSplits`.
 - The `bps` values must sum to exactly `10_000` — `InvalidSplits`.
 
 A `bps == 0` entry is rejected rather than accepted-and-ignored. Such a
@@ -61,6 +81,20 @@ collaborator twice should sum the shares before submitting.
 
 The check is a pairwise comparison over the vector, so position doesn't matter:
 `[a, b, a]` is rejected just as `[a, a, b]` is.
+A `bps > 10_000` entry claims more than the whole tip, so it could never belong
+to a set summing to 100% — the sum check would reject it anyway. It is rejected
+per entry because that also bounds the running total: with at most 20 entries
+of at most `10_000` each, the accumulator can never exceed `200_000`, far below
+`u32::MAX`. The sum is additionally accumulated with `checked_add`, which fails
+with `InvalidSplits` rather than trapping.
+
+This matters because `bps` is caller-supplied and unbounded in the wire type.
+Before, a set of shares whose true sum exceeded `u32::MAX` relied on
+`overflow-checks = true` in the release profile to trap — which reverted the
+transaction, so the 100% invariant did hold, but clients saw an opaque wasm
+error instead of error code 4, and the guarantee lived in `Cargo.toml` rather
+than in the validator. Both the per-entry bound and `checked_add` now put it in
+the code, so flipping that profile setting cannot turn it into a bypass.
 
 ### Splitting rules
 
@@ -76,10 +110,11 @@ The check is a pairwise comparison over the vector, so position doesn't matter:
 | 1 | `NotInitialized` | Token address missing (should never happen post-deploy). |
 | 2 | `JarExists` | Slug already registered. |
 | 3 | `JarNotFound` | Slug not registered. |
-| 4 | `InvalidSplits` | Empty list, an entry with `bps == 0`, or bps don't sum to 10_000. |
+| 4 | `InvalidSplits` | Empty list, an entry with `bps == 0` or `bps > 10_000`, a sum that overflows `u32`, or bps that don't sum to 10_000. |
 | 5 | `InvalidAmount` | Tip amount ≤ 0. |
 | 6 | `TooManyRecipients` | More than 20 recipients. |
 | 7 | `DuplicateRecipient` | The same address appears more than once in the splits. |
+| 8 | `MessageTooLong` | Tip message exceeds 280 bytes. |
 
 ## Events
 
@@ -93,13 +128,18 @@ registered jars. There is no on-chain `get_jar_ids` function — event scanning
 is the canonical discovery mechanism. This keeps `create_jar` cost constant
 (O(1) storage writes) regardless of how many jars have been created.
 
+Enumeration and existence are separate concerns: `jar_exists` answers "is this
+one slug taken?" straight from storage, so a client never has to scan the event
+log or an indexer's jar list just to validate a name.
+
 ### `tip` — published on every successful tip
 
 - **Topics:** `(symbol "tip", jar_id: String)`
 - **Data:** `(from: Address, amount: i128, message: String)`
 
 The backend indexer subscribes to this event to update balances, leaderboards,
-and notifications.
+and notifications. `message` is at most 280 bytes, so the payload size is
+bounded and a `varchar(280)` column is enough to store it.
 
 ## Jar discovery — design decision
 
