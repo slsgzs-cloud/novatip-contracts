@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
-use soroban_sdk::{token, vec, Address, Env, IntoVal, String};
+use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::{token, vec, Address, Env, String};
 
 /// Shared test fixture: a fresh env with a USDC-like token and a deployed
 /// TipSplitter pointed at it. All auths are mocked.
@@ -696,6 +696,35 @@ fn tip_on_missing_jar_fails() {
         &String::from_str(env, "?"),
     );
     assert_eq!(res, Err(Ok(Error::JarNotFound.into())));
+}
+
+/// `update_splits` runs the same lookup-then-panic path as `tip`, so an
+/// unregistered slug must be rejected rather than quietly creating a jar.
+#[test]
+fn update_splits_on_missing_jar_fails() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let alice = Address::generate(env);
+    // Valid splits, so a missing jar is the only thing that can fail this.
+    let splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10000,
+        },
+    ];
+
+    let jar_id = String::from_str(env, "@never-registered");
+    let res = client.try_update_splits(&jar_id, &splits);
+    assert_eq!(res, Err(Ok(Error::JarNotFound.into())));
+
+    // The failed update must not have brought the jar into existence.
+    assert!(
+        client.try_get_jar(&jar_id).is_err(),
+        "update_splits must not create a jar as a side effect"
+    );
 }
 
 #[test]
