@@ -19,12 +19,19 @@ See [`docs/CONTRACT.md`](./docs/CONTRACT.md) for the full `tip-splitter` interfa
 ## Quick start
 
 ```bash
+# One-time: the Stellar CLI builds contracts for this target
+rustup target add wasm32v1-none
+
 # Build all contracts to wasm
 make build
 
 # Run the test suite
 make test
 ```
+
+> Without the target installed, `make build` fails with `can't find crate for
+> core` — the CLI moved from `wasm32-unknown-unknown` to `wasm32v1-none`.
+> `make test` runs natively and works either way.
 
 ## Tech
 
@@ -36,8 +43,12 @@ make test
 
 | Network | Contract ID | Status |
 |---------|-------------|--------|
-| Testnet | coming soon | pending deployment |
+| Testnet | [`CCY2WPXROVUMPYAK3YJHZ57I35JKAUM5GDJKLUF5Y72KGENBQNSYAJIW`](https://stellar.expert/explorer/testnet/contract/CCY2WPXROVUMPYAK3YJHZ57I35JKAUM5GDJKLUF5Y72KGENBQNSYAJIW) | live |
 | Mainnet | coming soon | pending audit |
+
+The testnet deployment settles in the testnet USDC SAC below, and carries a
+`@demo` jar splitting 70/30 between two accounts for anyone wanting to try the
+read methods without deploying their own.
 
 USDC Stellar Asset Contract addresses:
 

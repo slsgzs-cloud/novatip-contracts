@@ -4,6 +4,20 @@ All notable changes to `novatip-contracts` are documented here.
 
 ## [Unreleased]
 
+### Deployed
+- Testnet deployment at
+  [`CCY2WPXROVUMPYAK3YJHZ57I35JKAUM5GDJKLUF5Y72KGENBQNSYAJIW`](https://stellar.expert/explorer/testnet/contract/CCY2WPXROVUMPYAK3YJHZ57I35JKAUM5GDJKLUF5Y72KGENBQNSYAJIW),
+  settling in the testnet USDC SAC, with a `@demo` jar splitting 70/30
+
+### Fixed
+- `validate_splits` counted each entry's `bps` twice, so any valid split vector
+  was rejected as `InvalidSplits` — a merge kept the accumulate line from two
+  separate changes
+- `test.rs` was missing the `MockAuth`, `MockAuthInvoke` and `IntoVal` imports
+  the auth tests use, leaving the crate uncompilable
+- `scripts/deploy.sh` looked for the wasm under `wasm32-unknown-unknown`; the
+  Stellar CLI now builds to `wasm32v1-none`, so the path is discovered instead
+
 ### Added
 - `jar_crtd` event published on every successful `create_jar`, carrying the jar
   slug and owner, so indexers can discover jars from the event log
