@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{token, vec, Address, Env, String};
+use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{token, vec, Address, Env, IntoVal, String};
 
 /// Shared test fixture: a fresh env with a USDC-like token and a deployed
 /// TipSplitter pointed at it. All auths are mocked.

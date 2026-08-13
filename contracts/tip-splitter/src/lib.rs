@@ -214,10 +214,6 @@ impl TipSplitter {
         let mut total: u32 = 0;
         for i in 0..n {
             let split = splits.get(i).unwrap();
-            if split.bps == 0 {
-                panic_with_error!(env, Error::InvalidSplits);
-            }
-            total += split.bps;
             let bps = split.bps;
             if bps == 0 || bps > BPS_DENOM {
                 panic_with_error!(env, Error::InvalidSplits);
