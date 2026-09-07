@@ -101,8 +101,10 @@ impl TipSplitter {
     }
 
     /// Update an existing jar's splits. Only the jar owner may do this.
+    /// Emits a `splits` event so indexers caching a jar's splits know to
+    /// refetch them.
     pub fn update_splits(env: Env, jar_id: String, splits: Vec<Split>) {
-        let key = DataKey::Jar(jar_id);
+        let key = DataKey::Jar(jar_id.clone());
         let jar: Jar = env
             .storage()
             .persistent()
@@ -110,6 +112,7 @@ impl TipSplitter {
             .unwrap_or_else(|| panic_with_error!(&env, Error::JarNotFound));
         jar.owner.require_auth();
         Self::validate_splits(&env, &splits);
+        let split_count = splits.len();
         env.storage().persistent().set(
             &key,
             &Jar {
@@ -117,6 +120,9 @@ impl TipSplitter {
                 splits,
             },
         );
+
+        env.events()
+            .publish((symbol_short!("splits"), jar_id), split_count);
     }
 
     /// Send a tip. Transfers `amount` of USDC from `from`, split across the jar's
