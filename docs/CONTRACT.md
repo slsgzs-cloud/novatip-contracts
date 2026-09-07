@@ -28,7 +28,7 @@ struct Jar   { owner: Address, splits: Vec<Split> }
 |----------|------|-------------|
 | `__constructor(admin, token)` | — | Deploy-time init. Stores the admin and USDC token address. |
 | `create_jar(owner, jar_id, splits)` | `owner` | Register a new jar. Fails if the slug exists or splits are invalid. Emits a `jar_crtd` event. |
-| `update_splits(jar_id, splits)` | jar `owner` | Replace a jar's splits. Subject to the same validation as `create_jar`. |
+| `update_splits(jar_id, splits)` | jar `owner` | Replace a jar's splits. Subject to the same validation as `create_jar`. Emits a `splits` event. |
 | `tip(from, jar_id, amount, message)` | `from` | Transfer `amount` USDC from `from`, split across the jar's recipients. |
 | `get_jar(jar_id) -> Jar` | — | Read a jar's configuration. Panics with `JarNotFound` if the slug is free. |
 | `jar_exists(jar_id) -> bool` | — | Whether the slug is already registered. |
@@ -131,6 +131,15 @@ is the canonical discovery mechanism. This keeps `create_jar` cost constant
 Enumeration and existence are separate concerns: `jar_exists` answers "is this
 one slug taken?" straight from storage, so a client never has to scan the event
 log or an indexer's jar list just to validate a name.
+
+### `splits` — published on every successful `update_splits`
+
+- **Topics:** `(symbol "splits", jar_id: String)`
+- **Data:** `split_count: u32`
+
+Lets an indexer that has cached a jar's splits know they went stale, without
+having to re-poll every jar on a schedule. The indexer refetches the jar via
+`get_jar` when it sees this event.
 
 ### `tip` — published on every successful tip
 

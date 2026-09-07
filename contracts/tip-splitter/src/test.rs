@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
-use soroban_sdk::{token, vec, Address, Env, IntoVal, String};
+use soroban_sdk::{symbol_short, token, vec, Address, Env, IntoVal, String};
 
 /// Shared test fixture: a fresh env with a USDC-like token and a deployed
 /// TipSplitter pointed at it. All auths are mocked.
@@ -957,14 +957,76 @@ fn create_jar_emits_jar_created_event() {
     client.create_jar(&owner, &jar_id, &splits);
 
     // The jar_crtd event must be published with the correct topics and data.
-    // Count the events emitted by our contract (the token SAC emits its own).
-    let jar_events = env
+    let jar_events: Vec<_> = env
         .events()
         .all()
         .iter()
         .filter(|e| e.0 == s.contract)
-        .count();
-    assert_eq!(jar_events, 1);
+        .collect();
+    assert_eq!(jar_events.len(), 1);
+    let (_, topics, data) = jar_events.get(0).unwrap();
+    assert_eq!(
+        topics,
+        &vec![
+            env,
+            symbol_short!("jar_crtd").into_val(env),
+            jar_id.into_val(env)
+        ]
+    );
+    assert_eq!(data, &owner.into_val(env));
+}
+
+#[test]
+fn update_splits_emits_splits_event() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+    let jar_id = String::from_str(env, "@two");
+
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    let new_splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 5000,
+        },
+        Split {
+            to: bob.clone(),
+            bps: 5000,
+        },
+    ];
+    client.update_splits(&jar_id, &new_splits);
+
+    // The splits event must be published with the jar id and new split count.
+    let expected_topics = vec![
+        env,
+        symbol_short!("splits").into_val(env),
+        jar_id.into_val(env),
+    ];
+    let splits_events: Vec<_> = env
+        .events()
+        .all()
+        .iter()
+        .filter(|e| e.0 == s.contract && e.1 == expected_topics)
+        .collect();
+    assert_eq!(splits_events.len(), 1);
+    let (_, _, data) = splits_events.get(0).unwrap();
+    assert_eq!(data, &new_splits.len().into_val(env));
 }
 
 #[test]
