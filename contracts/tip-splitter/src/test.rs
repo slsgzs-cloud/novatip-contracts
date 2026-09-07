@@ -1,5 +1,6 @@
 #![cfg(test)]
 use super::*;
+use proptest::prelude::*;
 use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{symbol_short, token, vec, Address, Env, IntoVal, String};
 
@@ -1620,4 +1621,69 @@ fn get_admin_returns_constructor_admin() {
     let client = TipSplitterClient::new(env, &s.contract);
 
     assert_eq!(client.get_admin(), s.admin);
+}
+
+/// A random valid bps distribution over `n` recipients: every share is at
+/// least 1 and the shares sum to exactly `BPS_DENOM`, mirroring what
+/// `validate_splits` requires.
+fn valid_bps_distribution(n: u32) -> impl Strategy<Value = std::vec::Vec<u32>> {
+    proptest::collection::vec(1u64..=1_000_000u64, n as usize).prop_map(move |weights| {
+        let remaining = (BPS_DENOM - n) as u64;
+        let sum_w: u64 = weights.iter().sum();
+        let mut bps = std::vec::Vec::with_capacity(n as usize);
+        let mut used = 0u64;
+        for w in weights.iter().take(n as usize - 1) {
+            let extra = if sum_w == 0 { 0 } else { w * remaining / sum_w };
+            used += extra;
+            bps.push(1 + extra as u32);
+        }
+        bps.push(1 + (remaining - used) as u32);
+        bps
+    })
+}
+
+fn splits_strategy() -> impl Strategy<Value = std::vec::Vec<u32>> {
+    (1u32..=MAX_RECIPIENTS).prop_flat_map(valid_bps_distribution)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// The core invariant: however a tip is split, every recipient's payout
+    /// sums back to exactly the tipped amount, with no dust lost or created,
+    /// and the tipper's balance drops by exactly that amount. Covers amounts
+    /// smaller than the recipient count, where truncation bites hardest.
+    #[test]
+    fn tip_distributes_full_amount_across_random_splits(
+        bps in splits_strategy(),
+        amount in 1i128..=1_000_000_000i128,
+    ) {
+        let s = setup();
+        let env = &s.env;
+        let client = TipSplitterClient::new(env, &s.contract);
+        let token = token::Client::new(env, &s.token);
+        let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+        let owner = Address::generate(env);
+        let tipper = Address::generate(env);
+        token_admin.mint(&tipper, &amount);
+
+        let recipients: std::vec::Vec<Address> =
+            bps.iter().map(|_| Address::generate(env)).collect();
+        let mut splits = vec![env];
+        for (addr, b) in recipients.iter().zip(bps.iter()) {
+            splits.push_back(Split {
+                to: addr.clone(),
+                bps: *b,
+            });
+        }
+
+        let jar_id = String::from_str(env, "@prop");
+        client.create_jar(&owner, &jar_id, &splits);
+        client.tip(&tipper, &jar_id, &amount, &String::from_str(env, "prop"));
+
+        let total: i128 = recipients.iter().map(|r| token.balance(r)).sum();
+        prop_assert_eq!(total, amount);
+        prop_assert_eq!(token.balance(&tipper), 0);
+    }
 }

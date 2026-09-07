@@ -1,4 +1,7 @@
-#![no_std]
+// `proptest` (a dev-dependency used by the property tests) needs `std`, so
+// `no_std` only applies to the real (wasm) build; the contract logic itself
+// never touches `std`, so this doesn't change on-chain behavior.
+#![cfg_attr(not(test), no_std)]
 //! Novatip — `tip_splitter` contract.
 //!
 //! A "tip jar" routes a single incoming USDC tip across one or more recipients
