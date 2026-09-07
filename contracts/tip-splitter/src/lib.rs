@@ -213,6 +213,14 @@ impl TipSplitter {
         env.storage().persistent().has(&DataKey::Jar(jar_id))
     }
 
+    /// The contract admin recorded at deploy time.
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
+    }
+
     /// The USDC token address tips are settled in.
     pub fn get_token(env: Env) -> Address {
         env.storage()
