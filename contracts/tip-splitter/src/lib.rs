@@ -125,6 +125,29 @@ impl TipSplitter {
             .publish((symbol_short!("splits"), jar_id), split_count);
     }
 
+    /// Transfer control of a jar to a new owner. Only the current owner may do
+    /// this; the new owner does not need to authorize. Splits are unchanged.
+    /// Emits a `jar_xfer` event so indexers can update who controls the jar.
+    pub fn transfer_jar_ownership(env: Env, jar_id: String, new_owner: Address) {
+        let key = DataKey::Jar(jar_id.clone());
+        let jar: Jar = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::JarNotFound));
+        jar.owner.require_auth();
+        env.storage().persistent().set(
+            &key,
+            &Jar {
+                owner: new_owner.clone(),
+                splits: jar.splits,
+            },
+        );
+
+        env.events()
+            .publish((symbol_short!("jar_xfer"), jar_id), new_owner);
+    }
+
     /// Send a tip. Transfers `amount` of USDC from `from`, split across the jar's
     /// recipients atomically, then emits a `("tip", jar_id)` event.
     ///
