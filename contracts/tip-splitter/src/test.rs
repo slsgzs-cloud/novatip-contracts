@@ -1337,6 +1337,113 @@ fn update_splits_succeeds_with_jar_owner_auth() {
     assert_eq!(client.get_jar(&jar_id).splits.get(0).unwrap().to, bob);
 }
 
+#[test]
+fn transfer_jar_ownership_requires_current_owner_auth() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let attacker = Address::generate(env);
+
+    let jar_id = String::from_str(env, "@stolen");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "transfer_jar_ownership",
+            args: (jar_id.clone(), attacker.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_transfer_jar_ownership(&jar_id, &attacker);
+    assert!(
+        res.is_err(),
+        "transfer_jar_ownership must reject a caller who does not own the jar"
+    );
+    assert_eq!(client.get_jar(&jar_id).owner, owner);
+}
+
+#[test]
+fn transfer_jar_ownership_moves_control_to_new_owner() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let new_owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+
+    let jar_id = String::from_str(env, "@handoff");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    client.transfer_jar_ownership(&jar_id, &new_owner);
+    assert_eq!(client.get_jar(&jar_id).owner, new_owner);
+    // Splits must survive the transfer untouched.
+    assert_eq!(client.get_jar(&jar_id).splits.get(0).unwrap().to, alice);
+
+    // The new owner can now update splits.
+    let new_splits = vec![
+        env,
+        Split {
+            to: bob.clone(),
+            bps: 10000,
+        },
+    ];
+    env.mock_auths(&[MockAuth {
+        address: &new_owner,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "update_splits",
+            args: (jar_id.clone(), new_splits.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.update_splits(&jar_id, &new_splits);
+    assert_eq!(client.get_jar(&jar_id).splits.get(0).unwrap().to, bob);
+
+    // The old owner can no longer update splits.
+    env.mock_auths(&[MockAuth {
+        address: &owner,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "update_splits",
+            args: (jar_id.clone(), new_splits.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+    let res = client.try_update_splits(&jar_id, &new_splits);
+    assert!(
+        res.is_err(),
+        "the old owner must not be able to update splits after transferring ownership"
+    );
+}
+
 /// `tip` moves the sender's tokens, so it must carry the sender's signature.
 ///
 /// The mock here authorizes *only* the token `transfer` the contract makes on
