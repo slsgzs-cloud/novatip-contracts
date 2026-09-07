@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
-use soroban_sdk::{token, vec, Address, Env, IntoVal, String};
+use soroban_sdk::{symbol_short, token, vec, Address, Env, IntoVal, String};
 
 /// Shared test fixture: a fresh env with a USDC-like token and a deployed
 /// TipSplitter pointed at it. All auths are mocked.
@@ -957,14 +957,23 @@ fn create_jar_emits_jar_created_event() {
     client.create_jar(&owner, &jar_id, &splits);
 
     // The jar_crtd event must be published with the correct topics and data.
-    // Count the events emitted by our contract (the token SAC emits its own).
-    let jar_events = env
+    let jar_events: Vec<_> = env
         .events()
         .all()
         .iter()
         .filter(|e| e.0 == s.contract)
-        .count();
-    assert_eq!(jar_events, 1);
+        .collect();
+    assert_eq!(jar_events.len(), 1);
+    let (_, topics, data) = jar_events.get(0).unwrap();
+    assert_eq!(
+        topics,
+        &vec![
+            env,
+            symbol_short!("jar_crtd").into_val(env),
+            jar_id.into_val(env)
+        ]
+    );
+    assert_eq!(data, &owner.into_val(env));
 }
 
 #[test]
