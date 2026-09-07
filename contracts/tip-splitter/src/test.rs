@@ -1,5 +1,6 @@
 #![cfg(test)]
 use super::*;
+use proptest::prelude::*;
 use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{symbol_short, token, vec, Address, Env, IntoVal, String};
 
@@ -9,6 +10,7 @@ struct Setup {
     env: Env,
     contract: Address,
     token: Address,
+    admin: Address,
 }
 
 fn setup() -> Setup {
@@ -24,6 +26,7 @@ fn setup() -> Setup {
         env,
         contract,
         token,
+        admin,
     }
 }
 
@@ -102,6 +105,55 @@ fn tip_sends_rounding_dust_to_last_recipient() {
     assert_eq!(token.balance(&b), 3);
     assert_eq!(token.balance(&c), 4);
     assert_eq!(token.balance(&tipper), 0);
+}
+
+#[test]
+fn tip_emits_tip_event_with_expected_topics_and_data() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+    let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let tipper = Address::generate(env);
+    token_admin.mint(&tipper, &100);
+
+    let jar_id = String::from_str(env, "@ev");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    let message = String::from_str(env, "nice set");
+    client.tip(&tipper, &jar_id, &100, &message);
+
+    // decodeTipEvent in novatip-sdk reads topic 0 as the "tip" symbol, topic 1
+    // as the jar id, and the data as the (from, amount, message) tuple.
+    let tip_events: std::vec::Vec<_> = env
+        .events()
+        .all()
+        .iter()
+        .filter(|e| e.0 == s.contract)
+        .collect();
+    assert_eq!(tip_events.len(), 1);
+    let (_, topics, data) = tip_events.get(0).unwrap();
+    assert_eq!(
+        topics,
+        &vec![
+            env,
+            symbol_short!("tip").into_val(env),
+            jar_id.into_val(env)
+        ]
+    );
+    assert_eq!(data, &(tipper, 100i128, message).into_val(env));
 }
 
 #[test]
@@ -957,7 +1009,7 @@ fn create_jar_emits_jar_created_event() {
     client.create_jar(&owner, &jar_id, &splits);
 
     // The jar_crtd event must be published with the correct topics and data.
-    let jar_events: Vec<_> = env
+    let jar_events: std::vec::Vec<_> = env
         .events()
         .all()
         .iter()
@@ -1018,7 +1070,7 @@ fn update_splits_emits_splits_event() {
         symbol_short!("splits").into_val(env),
         jar_id.into_val(env),
     ];
-    let splits_events: Vec<_> = env
+    let splits_events: std::vec::Vec<_> = env
         .events()
         .all()
         .iter()
@@ -1337,6 +1389,113 @@ fn update_splits_succeeds_with_jar_owner_auth() {
     assert_eq!(client.get_jar(&jar_id).splits.get(0).unwrap().to, bob);
 }
 
+#[test]
+fn transfer_jar_ownership_requires_current_owner_auth() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let attacker = Address::generate(env);
+
+    let jar_id = String::from_str(env, "@stolen");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "transfer_jar_ownership",
+            args: (jar_id.clone(), attacker.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_transfer_jar_ownership(&jar_id, &attacker);
+    assert!(
+        res.is_err(),
+        "transfer_jar_ownership must reject a caller who does not own the jar"
+    );
+    assert_eq!(client.get_jar(&jar_id).owner, owner);
+}
+
+#[test]
+fn transfer_jar_ownership_moves_control_to_new_owner() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let new_owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+
+    let jar_id = String::from_str(env, "@handoff");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    client.transfer_jar_ownership(&jar_id, &new_owner);
+    assert_eq!(client.get_jar(&jar_id).owner, new_owner);
+    // Splits must survive the transfer untouched.
+    assert_eq!(client.get_jar(&jar_id).splits.get(0).unwrap().to, alice);
+
+    // The new owner can now update splits.
+    let new_splits = vec![
+        env,
+        Split {
+            to: bob.clone(),
+            bps: 10000,
+        },
+    ];
+    env.mock_auths(&[MockAuth {
+        address: &new_owner,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "update_splits",
+            args: (jar_id.clone(), new_splits.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.update_splits(&jar_id, &new_splits);
+    assert_eq!(client.get_jar(&jar_id).splits.get(0).unwrap().to, bob);
+
+    // The old owner can no longer update splits.
+    env.mock_auths(&[MockAuth {
+        address: &owner,
+        invoke: &MockAuthInvoke {
+            contract: &s.contract,
+            fn_name: "update_splits",
+            args: (jar_id.clone(), new_splits.clone()).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+    let res = client.try_update_splits(&jar_id, &new_splits);
+    assert!(
+        res.is_err(),
+        "the old owner must not be able to update splits after transferring ownership"
+    );
+}
+
 /// `tip` moves the sender's tokens, so it must carry the sender's signature.
 ///
 /// The mock here authorizes *only* the token `transfer` the contract makes on
@@ -1502,4 +1661,78 @@ fn tip_succeeds_with_sender_auth() {
     client.tip(&tipper, &jar_id, &100, &message);
     assert_eq!(token.balance(&alice), 100);
     assert_eq!(token.balance(&tipper), 900);
+}
+
+#[test]
+fn get_admin_returns_constructor_admin() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    assert_eq!(client.get_admin(), s.admin);
+}
+
+/// A random valid bps distribution over `n` recipients: every share is at
+/// least 1 and the shares sum to exactly `BPS_DENOM`, mirroring what
+/// `validate_splits` requires.
+fn valid_bps_distribution(n: u32) -> impl Strategy<Value = std::vec::Vec<u32>> {
+    proptest::collection::vec(1u64..=1_000_000u64, n as usize).prop_map(move |weights| {
+        let remaining = (BPS_DENOM - n) as u64;
+        let sum_w: u64 = weights.iter().sum();
+        let mut bps = std::vec::Vec::with_capacity(n as usize);
+        let mut used = 0u64;
+        for w in weights.iter().take(n as usize - 1) {
+            let extra = if sum_w == 0 { 0 } else { w * remaining / sum_w };
+            used += extra;
+            bps.push(1 + extra as u32);
+        }
+        bps.push(1 + (remaining - used) as u32);
+        bps
+    })
+}
+
+fn splits_strategy() -> impl Strategy<Value = std::vec::Vec<u32>> {
+    (1u32..=MAX_RECIPIENTS).prop_flat_map(valid_bps_distribution)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// The core invariant: however a tip is split, every recipient's payout
+    /// sums back to exactly the tipped amount, with no dust lost or created,
+    /// and the tipper's balance drops by exactly that amount. Covers amounts
+    /// smaller than the recipient count, where truncation bites hardest.
+    #[test]
+    fn tip_distributes_full_amount_across_random_splits(
+        bps in splits_strategy(),
+        amount in 1i128..=1_000_000_000i128,
+    ) {
+        let s = setup();
+        let env = &s.env;
+        let client = TipSplitterClient::new(env, &s.contract);
+        let token = token::Client::new(env, &s.token);
+        let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+        let owner = Address::generate(env);
+        let tipper = Address::generate(env);
+        token_admin.mint(&tipper, &amount);
+
+        let recipients: std::vec::Vec<Address> =
+            bps.iter().map(|_| Address::generate(env)).collect();
+        let mut splits = vec![env];
+        for (addr, b) in recipients.iter().zip(bps.iter()) {
+            splits.push_back(Split {
+                to: addr.clone(),
+                bps: *b,
+            });
+        }
+
+        let jar_id = String::from_str(env, "@prop");
+        client.create_jar(&owner, &jar_id, &splits);
+        client.tip(&tipper, &jar_id, &amount, &String::from_str(env, "prop"));
+
+        let total: i128 = recipients.iter().map(|r| token.balance(r)).sum();
+        prop_assert_eq!(total, amount);
+        prop_assert_eq!(token.balance(&tipper), 0);
+    }
 }

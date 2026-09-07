@@ -4,6 +4,7 @@ members = ["contracts/*"]
 
 [workspace.dependencies]
 soroban-sdk = "22"
+proptest = "1"
 
 [profile.release]
 opt-level = "z"

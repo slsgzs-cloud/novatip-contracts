@@ -29,10 +29,12 @@ struct Jar   { owner: Address, splits: Vec<Split> }
 | `__constructor(admin, token)` | — | Deploy-time init. Stores the admin and USDC token address. |
 | `create_jar(owner, jar_id, splits)` | `owner` | Register a new jar. Fails if the slug exists or splits are invalid. Emits a `jar_crtd` event. |
 | `update_splits(jar_id, splits)` | jar `owner` | Replace a jar's splits. Subject to the same validation as `create_jar`. Emits a `splits` event. |
+| `transfer_jar_ownership(jar_id, new_owner)` | current jar `owner` | Hand control of a jar to `new_owner`. Splits are unchanged; the new owner does not need to authorize. Emits a `jar_xfer` event. |
 | `tip(from, jar_id, amount, message)` | `from` | Transfer `amount` USDC from `from`, split across the jar's recipients. |
 | `get_jar(jar_id) -> Jar` | — | Read a jar's configuration. Panics with `JarNotFound` if the slug is free. |
 | `jar_exists(jar_id) -> bool` | — | Whether the slug is already registered. |
 | `get_token() -> Address` | — | The USDC token address tips settle in. |
+| `get_admin() -> Address` | — | The contract admin recorded at deploy time. |
 
 ### Checking slug availability
 
@@ -140,6 +142,14 @@ log or an indexer's jar list just to validate a name.
 Lets an indexer that has cached a jar's splits know they went stale, without
 having to re-poll every jar on a schedule. The indexer refetches the jar via
 `get_jar` when it sees this event.
+
+### `jar_xfer` — published on every successful `transfer_jar_ownership`
+
+- **Topics:** `(symbol "jar_xfer", jar_id: String)`
+- **Data:** `new_owner: Address`
+
+Lets an indexer update who controls a jar without re-polling `get_jar` for
+every jar on a schedule.
 
 ### `tip` — published on every successful tip
 
