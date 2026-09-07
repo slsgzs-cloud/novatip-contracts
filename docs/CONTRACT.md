@@ -34,6 +34,7 @@ struct Jar   { owner: Address, splits: Vec<Split> }
 | `get_jar(jar_id) -> Jar` | — | Read a jar's configuration. Panics with `JarNotFound` if the slug is free. |
 | `jar_exists(jar_id) -> bool` | — | Whether the slug is already registered. |
 | `get_token() -> Address` | — | The USDC token address tips settle in. |
+| `get_admin() -> Address` | — | The contract admin recorded at deploy time. |
 
 ### Checking slug availability
 

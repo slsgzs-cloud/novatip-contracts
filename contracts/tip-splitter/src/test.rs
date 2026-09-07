@@ -9,6 +9,7 @@ struct Setup {
     env: Env,
     contract: Address,
     token: Address,
+    admin: Address,
 }
 
 fn setup() -> Setup {
@@ -24,6 +25,7 @@ fn setup() -> Setup {
         env,
         contract,
         token,
+        admin,
     }
 }
 
@@ -1609,4 +1611,13 @@ fn tip_succeeds_with_sender_auth() {
     client.tip(&tipper, &jar_id, &100, &message);
     assert_eq!(token.balance(&alice), 100);
     assert_eq!(token.balance(&tipper), 900);
+}
+
+#[test]
+fn get_admin_returns_constructor_admin() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    assert_eq!(client.get_admin(), s.admin);
 }
