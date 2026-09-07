@@ -108,6 +108,53 @@ fn tip_sends_rounding_dust_to_last_recipient() {
 }
 
 #[test]
+fn tip_emits_tip_event_with_expected_topics() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+    let token_admin = token::StellarAssetClient::new(env, &s.token);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let tipper = Address::generate(env);
+    token_admin.mint(&tipper, &100);
+
+    let jar_id = String::from_str(env, "@ev");
+    client.create_jar(
+        &owner,
+        &jar_id,
+        &vec![
+            env,
+            Split {
+                to: alice.clone(),
+                bps: 10000,
+            },
+        ],
+    );
+
+    client.tip(&tipper, &jar_id, &100, &String::from_str(env, "nice set"));
+
+    // decodeTipEvent in novatip-sdk reads topic 0 as the "tip" symbol and
+    // topic 1 as the jar id.
+    let tip_events: std::vec::Vec<_> = env
+        .events()
+        .all()
+        .iter()
+        .filter(|e| e.0 == s.contract)
+        .collect();
+    assert_eq!(tip_events.len(), 1);
+    let (_, topics, _) = tip_events.get(0).unwrap();
+    assert_eq!(
+        topics,
+        &vec![
+            env,
+            symbol_short!("tip").into_val(env),
+            jar_id.into_val(env)
+        ]
+    );
+}
+
+#[test]
 fn create_jar_rejects_bad_bps_sum() {
     let s = setup();
     let env = &s.env;
@@ -960,7 +1007,7 @@ fn create_jar_emits_jar_created_event() {
     client.create_jar(&owner, &jar_id, &splits);
 
     // The jar_crtd event must be published with the correct topics and data.
-    let jar_events: Vec<_> = env
+    let jar_events: std::vec::Vec<_> = env
         .events()
         .all()
         .iter()
@@ -1021,7 +1068,7 @@ fn update_splits_emits_splits_event() {
         symbol_short!("splits").into_val(env),
         jar_id.into_val(env),
     ];
-    let splits_events: Vec<_> = env
+    let splits_events: std::vec::Vec<_> = env
         .events()
         .all()
         .iter()
