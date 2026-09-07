@@ -108,7 +108,7 @@ fn tip_sends_rounding_dust_to_last_recipient() {
 }
 
 #[test]
-fn tip_emits_tip_event_with_expected_topics() {
+fn tip_emits_tip_event_with_expected_topics_and_data() {
     let s = setup();
     let env = &s.env;
     let client = TipSplitterClient::new(env, &s.contract);
@@ -132,10 +132,11 @@ fn tip_emits_tip_event_with_expected_topics() {
         ],
     );
 
-    client.tip(&tipper, &jar_id, &100, &String::from_str(env, "nice set"));
+    let message = String::from_str(env, "nice set");
+    client.tip(&tipper, &jar_id, &100, &message);
 
-    // decodeTipEvent in novatip-sdk reads topic 0 as the "tip" symbol and
-    // topic 1 as the jar id.
+    // decodeTipEvent in novatip-sdk reads topic 0 as the "tip" symbol, topic 1
+    // as the jar id, and the data as the (from, amount, message) tuple.
     let tip_events: std::vec::Vec<_> = env
         .events()
         .all()
@@ -143,7 +144,7 @@ fn tip_emits_tip_event_with_expected_topics() {
         .filter(|e| e.0 == s.contract)
         .collect();
     assert_eq!(tip_events.len(), 1);
-    let (_, topics, _) = tip_events.get(0).unwrap();
+    let (_, topics, data) = tip_events.get(0).unwrap();
     assert_eq!(
         topics,
         &vec![
@@ -152,6 +153,7 @@ fn tip_emits_tip_event_with_expected_topics() {
             jar_id.into_val(env)
         ]
     );
+    assert_eq!(data, &(tipper, 100i128, message).into_val(env));
 }
 
 #[test]
