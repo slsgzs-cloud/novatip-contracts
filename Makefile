@@ -1,8 +1,23 @@
-.PHONY: build test fmt lint clean deploy
+.PHONY: build optimize test fmt lint clean deploy
 
-# Build all contracts to optimized wasm (requires the Stellar CLI).
+# Build all contracts to wasm (requires the Stellar CLI).
 build:
 	stellar contract build
+
+# Optimize the built tip_splitter wasm and print the before/after size.
+# Run `make build` first.
+optimize:
+	@WASM=$$(find target -name 'tip_splitter.wasm' -path '*release*' -not -path '*/deps/*' \
+		-printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-); \
+	if [ -z "$$WASM" ] || [ ! -f "$$WASM" ]; then \
+		echo "error: no built tip_splitter.wasm found under target/. Run 'make build' first." >&2; \
+		exit 1; \
+	fi; \
+	BEFORE=$$(wc -c < "$$WASM"); \
+	stellar contract optimize --wasm "$$WASM"; \
+	OPTIMIZED="$${WASM%.wasm}.optimized.wasm"; \
+	AFTER=$$(wc -c < "$$OPTIMIZED"); \
+	echo "==> $$OPTIMIZED: $$BEFORE -> $$AFTER bytes ($$((BEFORE - AFTER)) saved)"
 
 # Run the test suite.
 test:
