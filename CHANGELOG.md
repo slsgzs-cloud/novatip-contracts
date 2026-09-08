@@ -49,6 +49,11 @@ All notable changes to `novatip-contracts` are documented here.
   the single-recipient case. `RECIPIENT` still works unchanged as shorthand
   for a 100% split. `SPLITS` is validated locally (valid JSON array, 1-20
   recipients, `bps` summing to exactly 10000) before invoking the contract
+- `make optimize` target, and a matching optimize step in `scripts/deploy.sh`
+  between build and deploy. The deployed wasm was previously the unoptimized
+  build output, which permanently inflates both the upload cost and the
+  contract code entry's ongoing state rent; the before/after byte size is now
+  printed during deploy
 
 ### Changed
 - Jar discovery moved from an on-chain list to the event log. The `get_jar_ids()`
