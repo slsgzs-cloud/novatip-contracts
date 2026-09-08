@@ -214,7 +214,14 @@ impl TipSplitter {
             } else {
                 amount
                     .checked_mul(split.bps as i128)
-                    .expect("overflow in share calculation")
+                    .unwrap_or_else(|| {
+                        // `amount * bps` overflows i128 before the division
+                        // can bring the result back into range. This is a
+                        // caller error — the tip amount is too large for the
+                        // contract to split safely — so we surface a typed
+                        // error rather than an opaque wasm trap.
+                        panic_with_error!(&env, Error::InvalidAmount)
+                    })
                     / (BPS_DENOM as i128)
             };
             if share > 0 && split.to != from {
