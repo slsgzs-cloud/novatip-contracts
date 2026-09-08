@@ -1663,6 +1663,84 @@ fn tip_succeeds_with_sender_auth() {
     assert_eq!(token.balance(&tipper), 900);
 }
 
+/// An empty `jar_id` is rejected before any storage write — it would still be
+/// usable as a storage key, but no frontend could address it as a URL slug.
+#[test]
+fn create_jar_rejects_empty_jar_id() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10000,
+        },
+    ];
+
+    let res = client.try_create_jar(&owner, &String::from_str(env, ""), &splits);
+    assert_eq!(res, Err(Ok(Error::InvalidJarId.into())));
+}
+
+/// A `jar_id` longer than `MAX_JAR_ID_LEN` is rejected — it is used as a
+/// storage key, an event topic, and a public URL slug, so unbounded input
+/// costs unnecessary rent.
+#[test]
+fn create_jar_rejects_over_long_jar_id() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10000,
+        },
+    ];
+
+    // One byte over MAX_JAR_ID_LEN (64).
+    let too_long = String::from_bytes(env, &[b'a'; 65]);
+    let res = client.try_create_jar(&owner, &too_long, &splits);
+    assert_eq!(res, Err(Ok(Error::InvalidJarId.into())));
+
+    // The jar must not have been stored.
+    assert!(
+        client.try_get_jar(&too_long).is_err(),
+        "rejected jar must not be persisted"
+    );
+}
+
+/// A `jar_id` of exactly `MAX_JAR_ID_LEN` bytes is still valid — the bound is
+/// inclusive, so an off-by-one here would reject legitimate jar ids.
+#[test]
+fn create_jar_accepts_jar_id_at_exact_limit() {
+    let s = setup();
+    let env = &s.env;
+    let client = TipSplitterClient::new(env, &s.contract);
+
+    let owner = Address::generate(env);
+    let alice = Address::generate(env);
+    let splits = vec![
+        env,
+        Split {
+            to: alice.clone(),
+            bps: 10000,
+        },
+    ];
+
+    let exact = String::from_bytes(env, &[b'a'; 64]);
+    assert_eq!(exact.len(), 64);
+    client.create_jar(&owner, &exact, &splits);
+
+    assert_eq!(client.get_jar(&exact).splits.len(), 1);
+}
+
 #[test]
 fn get_admin_returns_constructor_admin() {
     let s = setup();

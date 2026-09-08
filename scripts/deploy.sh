@@ -32,7 +32,19 @@ if [ -z "${WASM}" ] || [ ! -f "${WASM}" ]; then
   exit 1
 fi
 
-echo "==> Built ${WASM} ($(wc -c < "${WASM}") bytes)"
+BUILT_SIZE=$(wc -c < "${WASM}")
+echo "==> Built ${WASM} (${BUILT_SIZE} bytes)"
+
+echo "==> Optimizing wasm"
+stellar contract optimize --wasm "${WASM}"
+OPTIMIZED_WASM="${WASM%.wasm}.optimized.wasm"
+if [ ! -f "${OPTIMIZED_WASM}" ]; then
+  echo "error: expected optimized wasm at ${OPTIMIZED_WASM}" >&2
+  exit 1
+fi
+OPTIMIZED_SIZE=$(wc -c < "${OPTIMIZED_WASM}")
+echo "==> Optimized ${OPTIMIZED_WASM} (${BUILT_SIZE} -> ${OPTIMIZED_SIZE} bytes, $((BUILT_SIZE - OPTIMIZED_SIZE)) saved)"
+WASM="${OPTIMIZED_WASM}"
 
 echo "==> Deploying tip_splitter to ${NETWORK}"
 CONTRACT_ID=$(stellar contract deploy \
