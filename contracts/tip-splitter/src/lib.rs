@@ -74,6 +74,12 @@ pub enum Error {
     DuplicateRecipient = 7,
     MessageTooLong = 8,
     InvalidJarId = 9,
+    /// Splits list is empty.
+    SplitsEmpty = 10,
+    /// A split has a basis-point share that is zero or above 100 %.
+    SplitOut OfRange = 11,
+    /// Splits sum to something other than 10 000 bps.
+    SplitSumNot100Pct = 12,
 }
 
 #[contract]
@@ -285,7 +291,7 @@ impl TipSplitter {
     fn validate_splits(env: &Env, splits: &Vec<Split>) {
         let n = splits.len();
         if n == 0 {
-            panic_with_error!(env, Error::InvalidSplits);
+            panic_with_error!(env, Error::SplitsEmpty);
         }
         if n > MAX_RECIPIENTS {
             panic_with_error!(env, Error::TooManyRecipients);
@@ -295,7 +301,7 @@ impl TipSplitter {
             let split = splits.get(i).unwrap();
             let bps = split.bps;
             if bps == 0 || bps > BPS_DENOM {
-                panic_with_error!(env, Error::InvalidSplits);
+                panic_with_error!(env, Error::SplitOut OfRange);
             }
             // `checked_add` rather than `+=`: `bps` is caller-supplied, and an
             // overflow must surface as the same typed `InvalidSplits` every
@@ -305,7 +311,7 @@ impl TipSplitter {
             // resting on `overflow-checks = true` in the release profile.
             total = total
                 .checked_add(bps)
-                .unwrap_or_else(|| panic_with_error!(env, Error::InvalidSplits));
+                .unwrap_or_else(|| panic_with_error!(env, Error::SplitSumNot100Pct));
             // Pairwise comparison rather than a set: `n` is capped at
             // MAX_RECIPIENTS (20), so this is at most 190 comparisons, and a hash
             // set would need an allocator we don't have under `no_std`.
@@ -316,7 +322,7 @@ impl TipSplitter {
             }
         }
         if total != BPS_DENOM {
-            panic_with_error!(env, Error::InvalidSplits);
+            panic_with_error!(env, Error::SplitSumNot100Pct);
         }
     }
 }
