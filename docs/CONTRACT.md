@@ -6,7 +6,9 @@ basis-point shares, atomically, in one transaction.
 ## Concepts
 
 - **Jar** — a creator's tip target, identified by a public slug (e.g. `@alice`).
-  Holds an `owner` and a list of `Split`s.
+  Holds an `owner` and a list of `Split`s. The slug (`jar_id`) must be
+  non-empty and at most `64` bytes (`MAX_JAR_ID_LEN`) — it doubles as a
+  storage key, an event topic, and a public URL slug.
 - **Split** — a recipient `Address` and its share in basis points (`bps`).
   Every split must have `bps >= 1`, all splits in a jar must sum to exactly
   `10_000` (= 100%), and no address may appear more than once.
@@ -27,7 +29,7 @@ struct Jar   { owner: Address, splits: Vec<Split> }
 | Function | Auth | Description |
 |----------|------|-------------|
 | `__constructor(admin, token)` | — | Deploy-time init. Stores the admin and USDC token address. |
-| `create_jar(owner, jar_id, splits)` | `owner` | Register a new jar. Fails if the slug exists or splits are invalid. Emits a `jar_crtd` event. |
+| `create_jar(owner, jar_id, splits)` | `owner` | Register a new jar. Fails if the slug is empty, over `MAX_JAR_ID_LEN` bytes, already exists, or splits are invalid. Emits a `jar_crtd` event. |
 | `update_splits(jar_id, splits)` | jar `owner` | Replace a jar's splits. Subject to the same validation as `create_jar`. Emits a `splits` event. |
 | `transfer_jar_ownership(jar_id, new_owner)` | current jar `owner` | Hand control of a jar to `new_owner`. Splits are unchanged; the new owner does not need to authorize. Emits a `jar_xfer` event. |
 | `tip(from, jar_id, amount, message)` | `from` | Transfer `amount` USDC from `from`, split across the jar's recipients. |
@@ -51,6 +53,14 @@ Note that availability is not a reservation. Between the check and the
 `create_jar` call, another transaction can claim the slug — `create_jar` still
 panics with `JarExists`, and clients must handle that rather than treating a
 `false` from `jar_exists` as a guarantee.
+
+### `jar_id` validation
+
+`create_jar` rejects a `jar_id` that is empty or longer than `64` bytes
+(`MAX_JAR_ID_LEN`) — `InvalidJarId`. The id is used as a storage key, an event
+topic, and a public URL slug, so unbounded input would cost unnecessary rent
+and could produce jars no frontend can address. The bound is inclusive: a
+`jar_id` of exactly 64 bytes is accepted.
 
 ### Validation rules
 
@@ -117,6 +127,7 @@ the code, so flipping that profile setting cannot turn it into a bypass.
 | 6 | `TooManyRecipients` | More than 20 recipients. |
 | 7 | `DuplicateRecipient` | The same address appears more than once in the splits. |
 | 8 | `MessageTooLong` | Tip message exceeds 280 bytes. |
+| 9 | `InvalidJarId` | `jar_id` is empty or exceeds 64 bytes (`MAX_JAR_ID_LEN`). |
 
 ## Events
 

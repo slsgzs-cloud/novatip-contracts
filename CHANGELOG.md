@@ -37,6 +37,13 @@ All notable changes to `novatip-contracts` are documented here.
 - `MAX_MESSAGE_LEN` (280 bytes) bound on the `tip` message, with a new
   `MessageTooLong` error (code 8, appended so existing codes are unchanged)
 - Tests covering a message one byte over the limit and one at exactly the limit
+- `MAX_JAR_ID_LEN` (64 bytes) bound on `jar_id` in `create_jar`, with a new
+  `InvalidJarId` error (code 9, appended so existing codes are unchanged).
+  `jar_id` is used as a storage key, an event topic, and a public URL slug, so
+  an empty or unbounded id costs unnecessary rent and can produce jars no
+  frontend can address
+- Tests covering an empty `jar_id`, one byte over the limit, and one at
+  exactly the limit
 
 ### Changed
 - Jar discovery moved from an on-chain list to the event log. The `get_jar_ids()`
