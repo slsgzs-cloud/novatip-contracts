@@ -44,6 +44,11 @@ All notable changes to `novatip-contracts` are documented here.
   frontend can address
 - Tests covering an empty `jar_id`, one byte over the limit, and one at
   exactly the limit
+- `scripts/create-jar.sh` now accepts a `SPLITS` env var carrying a full
+  splits JSON array, so it can create multi-recipient jars instead of only
+  the single-recipient case. `RECIPIENT` still works unchanged as shorthand
+  for a 100% split. `SPLITS` is validated locally (valid JSON array, 1-20
+  recipients, `bps` summing to exactly 10000) before invoking the contract
 
 ### Changed
 - Jar discovery moved from an on-chain list to the event log. The `get_jar_ids()`
