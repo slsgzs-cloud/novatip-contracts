@@ -35,6 +35,18 @@ const MAX_JAR_ID_LEN: u32 = 64;
 /// to store and serve. 280 matches the character budget the tip form implies.
 const MAX_MESSAGE_LEN: u32 = 280;
 
+/// How long a jar's persistent entry is kept before it can be archived,
+/// in ledger increments. Soroban extends an entry's lifetime when it is
+/// read or written, so a jar that is tipped regularly will never expire.
+/// A jar that goes untouched for this many ledgers will be archived,
+/// after which `get_jar` and `tip` will fail until the entry is restored.
+///
+/// 1 000 000 ledgers is roughly 78 years at the default 5-second
+/// close rate, which is well beyond any realistic creator lifecycle.
+/// The constant exists so the value can be changed in one place if the
+/// product decides a shorter idle window is acceptable.
+const JAR_TTL_LEDGERS: u32 = 1_000_000;
+
 /// One recipient and the share of every tip they receive, in basis points.
 #[contracttype]
 #[derive(Clone)]
@@ -77,7 +89,7 @@ pub enum Error {
     /// Splits list is empty.
     SplitsEmpty = 10,
     /// A split has a basis-point share that is zero or above 100 %.
-    SplitOut OfRange = 11,
+    SplitOutOfRange = 11,
     /// Splits sum to something other than 10 000 bps.
     SplitSumNot100Pct = 12,
 }
@@ -130,6 +142,7 @@ impl TipSplitter {
             .persistent()
             .get(&key)
             .unwrap_or_else(|| panic_with_error!(&env, Error::JarNotFound));
+        env.storage().persistent().extend_ttl(&key, JAR_TTL_LEDGERS);
         jar.owner.require_auth();
         Self::validate_splits(&env, &splits);
         let split_count = splits.len();
@@ -155,6 +168,7 @@ impl TipSplitter {
             .persistent()
             .get(&key)
             .unwrap_or_else(|| panic_with_error!(&env, Error::JarNotFound));
+        env.storage().persistent().extend_ttl(&key, JAR_TTL_LEDGERS);
         jar.owner.require_auth();
         env.storage().persistent().set(
             &key,
@@ -182,11 +196,16 @@ impl TipSplitter {
             panic_with_error!(&env, Error::MessageTooLong);
         }
 
+        let jar_key = DataKey::Jar(jar_id.clone());
         let jar: Jar = env
             .storage()
             .persistent()
-            .get(&DataKey::Jar(jar_id.clone()))
+            .get(&jar_key)
             .unwrap_or_else(|| panic_with_error!(&env, Error::JarNotFound));
+
+        // Bump the jar's storage entry so a jar that is tipped regularly
+        // is never archived, and a jar idle for a few years still works.
+        env.storage().persistent().extend_ttl(&jar_key, JAR_TTL_LEDGERS);
 
         let token_addr: Address = env
             .storage()
@@ -245,10 +264,14 @@ impl TipSplitter {
 
     /// Read a jar's configuration.
     pub fn get_jar(env: Env, jar_id: String) -> Jar {
-        env.storage()
+        let key = DataKey::Jar(jar_id);
+        let jar: Jar = env
+            .storage()
             .persistent()
-            .get(&DataKey::Jar(jar_id))
-            .unwrap_or_else(|| panic_with_error!(&env, Error::JarNotFound))
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::JarNotFound));
+        env.storage().persistent().extend_ttl(&key, JAR_TTL_LEDGERS);
+        jar
     }
 
     /// Whether `jar_id` is already registered.
@@ -301,7 +324,7 @@ impl TipSplitter {
             let split = splits.get(i).unwrap();
             let bps = split.bps;
             if bps == 0 || bps > BPS_DENOM {
-                panic_with_error!(env, Error::SplitOut OfRange);
+                panic_with_error!(env, Error::SplitOutOfRange);
             }
             // `checked_add` rather than `+=`: `bps` is caller-supplied, and an
             // overflow must surface as the same typed `InvalidSplits` every
