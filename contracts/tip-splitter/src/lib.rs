@@ -22,6 +22,12 @@ use soroban_sdk::{
 const BPS_DENOM: u32 = 10_000;
 /// Safety bound so a single tip can't fan out to an unbounded recipient list.
 const MAX_RECIPIENTS: u32 = 20;
+/// Longest `jar_id`, in bytes, accepted by `create_jar`.
+///
+/// The id is used as a storage key, an event topic, and a public URL slug, so
+/// an unbounded id costs unnecessary rent and can produce jars no frontend can
+/// address.
+const MAX_JAR_ID_LEN: u32 = 64;
 /// Longest tip message, in bytes, that may ride along in the `tip` event.
 ///
 /// The message is echoed verbatim into the event payload, so an unbounded
@@ -67,6 +73,7 @@ pub enum Error {
     TooManyRecipients = 6,
     DuplicateRecipient = 7,
     MessageTooLong = 8,
+    InvalidJarId = 9,
 }
 
 #[contract]
@@ -80,12 +87,16 @@ impl TipSplitter {
         env.storage().instance().set(&DataKey::Token, &token);
     }
 
-    /// Register a new tip jar. `owner` must authorize. Splits must sum to 100%
+    /// Register a new tip jar. `owner` must authorize. `jar_id` must be
+    /// non-empty and at most `MAX_JAR_ID_LEN` bytes. Splits must sum to 100%
     /// and may not name the same recipient twice.
     /// Emits a `jar_crtd` event so indexers can discover all jars from the
     /// event log without any on-chain list.
     pub fn create_jar(env: Env, owner: Address, jar_id: String, splits: Vec<Split>) {
         owner.require_auth();
+        if jar_id.len() == 0 || jar_id.len() > MAX_JAR_ID_LEN {
+            panic_with_error!(&env, Error::InvalidJarId);
+        }
         let key = DataKey::Jar(jar_id.clone());
         if env.storage().persistent().has(&key) {
             panic_with_error!(&env, Error::JarExists);
