@@ -190,6 +190,21 @@ impl TipSplitter {
         let client = token::Client::new(&env, &token_addr);
 
         let n = jar.splits.len();
+
+        // Reject amounts too small to pay every recipient a non-zero share.
+        // With integer division, a recipient's share of `amount * bps / 10_000`
+        // truncates to zero when `amount < 10_000 / bps`. If that happens, the
+        // recipient is silently skipped and the final recipient absorbs the
+        // dust — the tip succeeds but the collaborator never sees it.
+        // Better to fail loudly with InvalidAmount than to pay nobody.
+        for i in 0..n {
+            let split = jar.splits.get(i).unwrap();
+            let bps = split.bps as i128;
+            if amount * bps < (BPS_DENOM as i128) {
+                panic_with_error!(&env, Error::InvalidAmount);
+            }
+        }
+
         let mut distributed: i128 = 0;
         for i in 0..n {
             let split = jar.splits.get(i).unwrap();
@@ -197,9 +212,15 @@ impl TipSplitter {
             let share = if i == n - 1 {
                 amount - distributed
             } else {
-                amount * (split.bps as i128) / (BPS_DENOM as i128)
+                amount
+                    .checked_mul(split.bps as i128)
+                    .expect("overflow in share calculation")
+                    / (BPS_DENOM as i128)
             };
-            if share > 0 {
+            if share > 0 && split.to != from {
+                // Skip self-transfers: a tipper who is also a recipient would
+                // otherwise pay themselves with a no-op transfer that burns gas
+                // and emits a confusing token event.
                 client.transfer(&from, &split.to, &share);
                 distributed += share;
             }
