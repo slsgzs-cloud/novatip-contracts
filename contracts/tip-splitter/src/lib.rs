@@ -28,11 +28,21 @@ const MAX_RECIPIENTS: u32 = 20;
 /// an unbounded id costs unnecessary rent and can produce jars no frontend can
 /// address.
 const MAX_JAR_ID_LEN: u32 = 64;
-/// Longest tip message, in bytes, that may ride along in the `tip` event.
+/// Longest tip message, in UTF-8 bytes, that may ride along in the `tip` event.
 ///
 /// The message is echoed verbatim into the event payload, so an unbounded
 /// string inflates the transaction and every downstream copy the indexer has
-/// to store and serve. 280 matches the character budget the tip form implies.
+/// to store and serve. 280 matches the character budget the tip form implies
+/// for plain-ASCII text.
+///
+/// This is a byte count, not a character count. Accented characters (é, ö)
+/// cost 2 bytes each in UTF-8 and most emoji cost 4, so a non-ASCII message
+/// hits the limit at well under 280 visible characters. The contract checks
+/// `message.len()`, which returns the byte count, so the rejection boundary
+/// is 280 bytes regardless of character count.
+///
+/// Clients should count UTF-8 bytes — not `message.length` in JavaScript or
+/// `len(message)` in Rust — to show an accurate remaining-bytes indicator.
 const MAX_MESSAGE_LEN: u32 = 280;
 
 /// How long a jar's persistent entry is kept before it can be archived,
